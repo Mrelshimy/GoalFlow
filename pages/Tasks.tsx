@@ -1,7 +1,8 @@
+
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
 import { Task, TaskList, Goal } from '../types';
-import { Plus, Check, Trash2, ChevronDown, ChevronUp, Calendar, AlignLeft, List, Target, Link as LinkIcon, X, Upload, FileJson, AlertCircle } from 'lucide-react';
+import { Plus, Check, Trash2, ChevronDown, ChevronUp, Calendar, AlignLeft, List, Target, Link as LinkIcon, X, Upload, FileJson, AlertCircle, Loader2, CheckCircle } from 'lucide-react';
 import { useAuth } from '../App';
 
 const Tasks: React.FC = () => {
@@ -17,7 +18,14 @@ const Tasks: React.FC = () => {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [isCreatingList, setIsCreatingList] = useState(false);
   const [newListName, setNewListName] = useState('');
+  
+  // Import State
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
+  const [importStatus, setImportStatus] = useState('');
+  const [importSuccess, setImportSuccess] = useState(false);
+  const [importStats, setImportStats] = useState({ lists: 0, tasks: 0 });
 
   useEffect(() => {
     const init = async () => {
@@ -103,50 +111,136 @@ const Tasks: React.FC = () => {
       setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
   };
 
+  const resetImportState = () => {
+      setIsImportModalOpen(true);
+      setIsImporting(false);
+      setImportProgress(0);
+      setImportStatus('');
+      setImportSuccess(false);
+  };
+
   const handleImport = async (file: File) => {
+    setIsImporting(true);
+    setImportProgress(0);
+    setImportStatus('Reading file...');
+    setImportSuccess(false);
+
     const reader = new FileReader();
     reader.onload = async (event) => {
         try {
             const content = event.target?.result as string;
-            const parsed = JSON.parse(content);
-            const rawData = Array.isArray(parsed) ? parsed : (parsed.items || []);
+            setImportStatus('Parsing JSON...');
             
-            const isListOfLists = rawData.some((item: any) => item.items || item.kind === 'tasks#taskList');
-            let importCount = 0;
-
-            if (isListOfLists) {
-                for (const listData of rawData) {
-                    if (listData.title) {
-                        const newList = { id: crypto.randomUUID(), userId: user?.id || '', title: listData.title };
-                        await db.saveTaskList(newList);
-                        const tasksToImport = listData.items || [];
-                        for (const t of tasksToImport) { await importSingleTask(t, newList.id); }
-                        importCount += tasksToImport.length;
-                    }
-                }
-            } else {
-                const listName = file.name.replace(/\.json$/i, '') || 'Imported Tasks';
-                const newList = { id: crypto.randomUUID(), userId: user?.id || '', title: listName };
-                await db.saveTaskList(newList);
-                for (const t of rawData) { await importSingleTask(t, newList.id); }
-                importCount += rawData.length;
-                setActiveListId(newList.id);
+            let parsed;
+            try {
+                parsed = JSON.parse(content);
+            } catch (e) {
+                throw new Error("Invalid JSON file");
             }
 
-            alert(`Successfully imported ${importCount} tasks.`);
-            setIsImportModalOpen(false);
-            setTaskLists(await db.getTaskLists());
-            refreshTasks();
+            // --- Robust Parsing Logic ---
+            // Google Takeout JSON structure can vary.
+            // Case 1: Root object with "items" array (standard API-like response)
+            // Case 2: Root array of TaskList objects
+            // Case 3: Root array of Task objects (single list export)
+            
+            let rawLists = [];
+            if (Array.isArray(parsed)) {
+                rawLists = parsed;
+            } else if (parsed.items && Array.isArray(parsed.items)) {
+                rawLists = parsed.items;
+            } else {
+                // If it's a single object, wrap it
+                rawLists = [parsed];
+            }
 
-        } catch (error) {
-            alert('Failed to parse JSON.');
+            // Determine if these are Lists or Tasks
+            // A List usually has 'kind': 'tasks#taskList' OR contains 'items' array
+            // A Task usually has 'kind': 'tasks#task' OR 'status'
+            const isCollectionOfLists = rawLists.some((item: any) => 
+                (item.items && Array.isArray(item.items)) || 
+                item.kind === 'tasks#taskList'
+            );
+
+            let listsToProcess: any[] = [];
+            let totalTasksToImport = 0;
+
+            if (isCollectionOfLists) {
+                listsToProcess = rawLists;
+            } else {
+                // Treat as a single list of tasks
+                const listName = file.name.replace(/\.json$/i, '') || 'Imported Tasks';
+                listsToProcess = [{
+                    title: listName,
+                    items: rawLists // The raw array is the tasks
+                }];
+            }
+
+            // Pre-calculate total for progress bar
+            listsToProcess.forEach(l => {
+                if (l.items && Array.isArray(l.items)) {
+                    totalTasksToImport += l.items.length;
+                }
+            });
+
+            if (listsToProcess.length === 0 && totalTasksToImport === 0) {
+                 throw new Error("No valid lists or tasks found to import.");
+            }
+
+            setImportStatus(`Found ${listsToProcess.length} lists and ${totalTasksToImport} tasks...`);
+
+            let processedTasks = 0;
+            let processedLists = 0;
+
+            for (const listData of listsToProcess) {
+                // Valid list should usually have a title or we give it one
+                const title = listData.title || `Imported List ${processedLists + 1}`;
+                
+                // Create List in DB
+                const newList = { id: crypto.randomUUID(), userId: user?.id || '', title: title };
+                await db.saveTaskList(newList);
+                processedLists++;
+
+                // Import Tasks for this list
+                if (listData.items && Array.isArray(listData.items)) {
+                    for (const t of listData.items) {
+                        await importSingleTask(t, newList.id);
+                        processedTasks++;
+                        
+                        // Update Progress
+                        const currentProgress = totalTasksToImport > 0 
+                            ? Math.round((processedTasks / totalTasksToImport) * 100) 
+                            : 100;
+                        
+                        setImportProgress(currentProgress);
+                        setImportStatus(`Importing ${title} (${processedTasks}/${totalTasksToImport})...`);
+                    }
+                }
+            }
+
+            setImportStats({ lists: processedLists, tasks: processedTasks });
+            setImportSuccess(true);
+            setImportStatus('Import Complete!');
+            
+            // Refresh Data
+            const updatedLists = await db.getTaskLists();
+            setTaskLists(updatedLists);
+            refreshTasks();
+            if (!activeListId && updatedLists.length > 0) setActiveListId(updatedLists[0].id);
+
+        } catch (error: any) {
+            console.error(error);
+            setImportStatus(`Error: ${error.message || 'Failed to parse file'}`);
+            setIsImporting(false); 
         }
     };
     reader.readAsText(file);
   };
 
   const importSingleTask = async (t: any, listId: string) => {
+      // Basic validation: needs a title
       if (!t.title) return;
+      
       const isCompleted = t.status === 'completed';
       const newTask: Task = {
           id: crypto.randomUUID(),
@@ -172,7 +266,7 @@ const Tasks: React.FC = () => {
             <div className="flex justify-between items-center mb-4 px-2">
                 <div className="flex items-center gap-2">
                     <h2 className="font-bold text-gray-700">My Lists</h2>
-                    <button onClick={() => setIsImportModalOpen(true)} className="text-gray-400 hover:text-primary p-1 rounded transition-colors"><Upload size={16} /></button>
+                    <button onClick={resetImportState} className="text-gray-400 hover:text-primary p-1 rounded transition-colors" title="Import Google Tasks JSON"><Upload size={16} /></button>
                 </div>
                 <button onClick={() => setIsCreatingList(!isCreatingList)} className="text-primary hover:bg-blue-50 p-1 rounded transition-colors"><Plus size={18} /></button>
             </div>
@@ -240,13 +334,46 @@ const Tasks: React.FC = () => {
                 <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4 animate-fade-in">
                     <div className="bg-white w-full max-w-md rounded-xl shadow-xl p-6">
                         <div className="flex justify-between items-start mb-4">
-                            <h3 className="text-lg font-bold text-gray-800">Import Tasks</h3>
-                            <button onClick={() => setIsImportModalOpen(false)}><X size={20} /></button>
+                            <h3 className="text-lg font-bold text-gray-800">Import Google Tasks</h3>
+                            {!isImporting && !importSuccess && <button onClick={() => setIsImportModalOpen(false)}><X size={20} /></button>}
                         </div>
-                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer relative mb-4">
-                            <input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && handleImport(e.target.files[0])} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
-                            <div className="flex flex-col items-center gap-2"><Upload className="text-gray-400" size={32} /><span className="text-sm text-gray-600 font-medium">Click to upload JSON</span></div>
-                        </div>
+                        
+                        {importSuccess ? (
+                            <div className="text-center py-6">
+                                <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <CheckCircle size={32} />
+                                </div>
+                                <h4 className="text-xl font-bold text-gray-800 mb-2">Import Successful!</h4>
+                                <p className="text-gray-600 mb-6">Successfully imported {importStats.lists} lists and {importStats.tasks} tasks.</p>
+                                <button onClick={() => setIsImportModalOpen(false)} className="bg-primary text-white px-6 py-2 rounded-lg hover:bg-blue-600">Done</button>
+                            </div>
+                        ) : isImporting ? (
+                            <div className="py-6">
+                                <div className="flex justify-between text-sm font-medium text-gray-700 mb-2">
+                                    <span>Processing...</span>
+                                    <span>{importProgress}%</span>
+                                </div>
+                                <div className="w-full bg-gray-100 rounded-full h-2.5 mb-4">
+                                    <div className="bg-primary h-2.5 rounded-full transition-all duration-300" style={{ width: `${importProgress}%` }}></div>
+                                </div>
+                                <p className="text-xs text-center text-gray-500">{importStatus}</p>
+                            </div>
+                        ) : (
+                            <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer relative mb-4 hover:bg-gray-50 transition-colors">
+                                <input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && handleImport(e.target.files[0])} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                                <div className="flex flex-col items-center gap-2">
+                                    <Upload className="text-primary" size={32} />
+                                    <span className="text-sm text-gray-700 font-medium">Click to upload JSON</span>
+                                    <span className="text-xs text-gray-400">Supports Google Takeout Export</span>
+                                </div>
+                            </div>
+                        )}
+                        
+                        {!importSuccess && !isImporting && (
+                             <p className="text-xs text-gray-400 mt-4 text-center">
+                                 Upload the 'Tasks.json' file from your Google Takeout export.
+                             </p>
+                        )}
                     </div>
                 </div>
             )}
