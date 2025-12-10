@@ -3,9 +3,10 @@ import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
 import { generateReport } from '../services/geminiService';
 import { jsPDF } from 'jspdf';
-import { FileText, Download, Loader2, Calendar, ListChecks } from 'lucide-react';
+import { FileText, Download, Loader2, Calendar, ListChecks, ArrowRight } from 'lucide-react';
 
 const Reports: React.FC = () => {
+  // --- AI Report State ---
   const [reportType, setReportType] = useState('Monthly');
   const [tone, setTone] = useState('Manager-ready');
   const [selectedDateForWeek, setSelectedDateForWeek] = useState('');
@@ -16,7 +17,17 @@ const Reports: React.FC = () => {
   const [endDate, setEndDate] = useState('');
   const [reportContent, setReportContent] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // --- Quick Export State ---
   const [isExportingList, setIsExportingList] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState(() => {
+    const date = new Date();
+    return new Date(date.getFullYear(), date.getMonth(), 1).toISOString().split('T')[0]; // First day of current month
+  });
+  const [exportEndDate, setExportEndDate] = useState(() => {
+    const date = new Date();
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0).toISOString().split('T')[0]; // Last day of current month
+  });
 
   useEffect(() => {
     const today = new Date();
@@ -25,6 +36,7 @@ const Reports: React.FC = () => {
     setSelectedQuarter(Math.floor((today.getMonth() + 3) / 3).toString());
   }, []);
 
+  // AI Report Date Logic
   useEffect(() => {
     if (reportType === 'Weekly' && selectedDateForWeek) {
         const d = new Date(selectedDateForWeek);
@@ -105,7 +117,7 @@ const Reports: React.FC = () => {
   };
 
   const handleExportSimplePDF = async () => {
-    if (!startDate || !endDate) return;
+    if (!exportStartDate || !exportEndDate) return;
     setIsExportingList(true);
 
     try {
@@ -114,17 +126,17 @@ const Reports: React.FC = () => {
           db.getAchievements()
       ]);
 
-      // Filter Data
+      // Filter Data using EXPORT specific dates
       const finishedGoals = goals.filter(g => 
           g.isCompleted && 
           g.completedAt && 
-          g.completedAt >= startDate && 
-          g.completedAt <= endDate
+          g.completedAt >= exportStartDate && 
+          g.completedAt <= exportEndDate
       );
 
       const finishedAchievements = achievements.filter(a => 
-          a.date >= startDate && 
-          a.date <= endDate
+          a.date >= exportStartDate && 
+          a.date <= exportEndDate
       );
 
       // Generate PDF
@@ -142,7 +154,7 @@ const Reports: React.FC = () => {
       doc.setFontSize(10);
       doc.setFont("helvetica", "normal");
       doc.setTextColor(100);
-      doc.text(`Period: ${startDate} to ${endDate}`, margin, y);
+      doc.text(`Period: ${exportStartDate} to ${exportEndDate}`, margin, y);
       y += 15;
       doc.setTextColor(0);
 
@@ -208,7 +220,7 @@ const Reports: React.FC = () => {
           doc.text("No completed items found for this period.", margin, y);
       }
 
-      doc.save(`Completed_Items_${endDate}.pdf`);
+      doc.save(`Completed_Items_${exportEndDate}.pdf`);
 
     } catch (error) {
         console.error(error);
@@ -224,9 +236,55 @@ const Reports: React.FC = () => {
       
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="md:col-span-1 space-y-6">
+            
+            {/* 1. Quick Export Card (Moved to Top) */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
                 <h2 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <FileText size={20} className="text-primary" /> AI Report Settings
+                    <ListChecks size={20} className="text-indigo-600" /> Quick Exports
+                </h2>
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Export Period</label>
+                        <div className="grid grid-cols-2 gap-2">
+                            <div>
+                                <label className="block text-[10px] text-gray-400 mb-0.5">From</label>
+                                <input 
+                                    type="date" 
+                                    value={exportStartDate} 
+                                    onChange={e => setExportStartDate(e.target.value)} 
+                                    className="w-full border rounded-md p-1.5 bg-gray-50 text-xs focus:ring-indigo-500 focus:border-indigo-500" 
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-[10px] text-gray-400 mb-0.5">To</label>
+                                <input 
+                                    type="date" 
+                                    value={exportEndDate} 
+                                    onChange={e => setExportEndDate(e.target.value)} 
+                                    className="w-full border rounded-md p-1.5 bg-gray-50 text-xs focus:ring-indigo-500 focus:border-indigo-500" 
+                                />
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <button 
+                        onClick={handleExportSimplePDF} 
+                        disabled={isExportingList || !exportStartDate || !exportEndDate} 
+                        className="w-full bg-indigo-600 text-white py-2.5 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50 flex justify-center items-center gap-2 shadow-sm transition-all active:scale-[0.98]"
+                    >
+                        {isExportingList ? <Loader2 className="animate-spin" size={18} /> : <Download size={18} />} 
+                        Download List PDF
+                    </button>
+                    <p className="text-[10px] text-gray-400 text-center">
+                        Includes completed goals & achievements only.
+                    </p>
+                </div>
+            </div>
+
+            {/* 2. AI Report Settings Card */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                <h2 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                    <FileText size={20} className="text-primary" /> AI Report
                 </h2>
                 <div className="space-y-4">
                     <div>
@@ -269,21 +327,6 @@ const Reports: React.FC = () => {
                     </button>
                 </div>
             </div>
-
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                <h2 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <ListChecks size={20} className="text-green-600" /> Quick Exports
-                </h2>
-                <p className="text-xs text-gray-500 mb-4">Download a simple list of items finished during the selected period.</p>
-                <button 
-                    onClick={handleExportSimplePDF} 
-                    disabled={isExportingList || !startDate || !endDate} 
-                    className="w-full bg-white border border-gray-300 text-gray-700 py-2 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50 flex justify-center items-center gap-2"
-                >
-                    {isExportingList ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />} 
-                    Export Completed List (PDF)
-                </button>
-            </div>
         </div>
 
         <div className="md:col-span-2 bg-white p-8 rounded-xl shadow-sm border border-gray-200 min-h-[500px] relative">
@@ -293,7 +336,7 @@ const Reports: React.FC = () => {
                     <div className="prose prose-sm max-w-none prose-blue"><h2 className="text-xl font-bold text-gray-900 mb-2 border-b pb-2">{reportType} Report</h2><p className="text-xs text-gray-500 mb-6">Period: {startDate} - {endDate}</p><div className="whitespace-pre-wrap text-gray-700 leading-relaxed font-sans">{reportContent}</div></div>
                 </>
             ) : (
-                <div className="flex flex-col items-center justify-center h-full text-gray-400"><FileText size={48} className="mb-4 text-gray-200" /><p>Select settings and click generate.</p></div>
+                <div className="flex flex-col items-center justify-center h-full text-gray-400"><FileText size={48} className="mb-4 text-gray-200" /><p>Select AI settings and click generate.</p></div>
             )}
         </div>
       </div>
