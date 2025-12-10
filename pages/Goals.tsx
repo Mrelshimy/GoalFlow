@@ -1,15 +1,15 @@
-
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { db } from '../services/db';
 import { generateSmartGoal, generateMilestones } from '../services/geminiService';
 import { Goal, GoalCategory, Milestone, Task } from '../types';
-import { Plus, Trash2, Wand2, CheckCircle, Circle, Save, X, ChevronDown, ChevronUp, Target, Pencil, Tag, Link as LinkIcon } from 'lucide-react';
+import { Plus, Trash2, Wand2, CheckCircle, Circle, Save, X, ChevronDown, ChevronUp, Target, Pencil, Tag, Link as LinkIcon, Loader2 } from 'lucide-react';
 
 const Goals: React.FC = () => {
   const { user } = useAuth();
   const [goals, setGoals] = useState<Goal[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
   
   // Create/Edit State
   const [isCreating, setIsCreating] = useState(false);
@@ -27,12 +27,13 @@ const Goals: React.FC = () => {
     refreshGoals();
   }, []);
 
-  const refreshGoals = () => {
-      setGoals(db.getGoals());
-      setTasks(db.getTasks());
+  const refreshGoals = async () => {
+      setLoading(true);
+      const [g, t] = await Promise.all([db.getGoals(), db.getTasks()]);
+      setGoals(g);
+      setTasks(t);
+      setLoading(false);
   };
-
-  // --- AI & Goal Management ---
 
   const handleSmartGoal = async () => {
     if (!description) return;
@@ -55,27 +56,25 @@ const Goals: React.FC = () => {
     setCategory(goal.category);
     setDescription(goal.description);
     setTimeframe(goal.timeframe);
-    
-    // Map existing milestones to form format
     setNewMilestones(goal.milestones.map(m => ({
         description: m.description,
         status: m.status,
         dueDate: m.dueDate
     })));
-    
     setEditingId(goal.id);
     setIsCreating(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsLoadingAI(true); // Reuse loading spinner
     
     const goalId = editingId || crypto.randomUUID();
     const existingGoal = editingId ? goals.find(g => g.id === editingId) : null;
 
     const goalToSave: Goal = {
       id: goalId,
-      userId: existingGoal?.userId || user?.id || 'user-1',
+      userId: existingGoal?.userId || user?.id || '',
       title,
       category,
       description,
@@ -83,7 +82,7 @@ const Goals: React.FC = () => {
       progress: existingGoal ? existingGoal.progress : 0,
       createdAt: existingGoal?.createdAt || new Date().toISOString(),
       milestones: newMilestones.map(m => ({
-        id: crypto.randomUUID(),
+        id: crypto.randomUUID(), // New milestones get new UUIDs each save, okay for MVP
         goalId: goalId,
         description: m.description,
         status: m.status || 'pending',
@@ -94,9 +93,10 @@ const Goals: React.FC = () => {
       completedAt: existingGoal?.completedAt
     };
     
-    db.saveGoal(goalToSave);
-    refreshGoals();
+    await db.saveGoal(goalToSave);
+    await refreshGoals();
     resetForm();
+    setIsLoadingAI(false);
   };
 
   const resetForm = () => {
@@ -108,40 +108,43 @@ const Goals: React.FC = () => {
     setNewMilestones([]);
   };
 
-  const handleDelete = (id: string) => {
-    db.deleteGoal(id);
-    refreshGoals();
+  const handleDelete = async (id: string) => {
+    if(confirm("Delete this goal?")) {
+        await db.deleteGoal(id);
+        refreshGoals();
+    }
   };
 
-  const toggleMilestone = (goal: Goal, milestoneId: string) => {
+  const toggleMilestone = async (goal: Goal, milestoneId: string) => {
     const updatedMilestones = goal.milestones.map(m => {
         if (m.id === milestoneId) {
             return { ...m, status: m.status === 'completed' ? 'pending' : 'completed' } as Milestone;
         }
         return m;
     });
-    
     const updatedGoal = { ...goal, milestones: updatedMilestones };
-    db.saveGoal(updatedGoal);
+    await db.saveGoal(updatedGoal);
     refreshGoals();
   };
 
-  const toggleLinkedTask = (task: Task) => {
+  const toggleLinkedTask = async (task: Task) => {
       const updatedTask = { 
           ...task, 
           status: task.status === 'completed' ? 'pending' : 'completed',
           completedAt: task.status === 'completed' ? undefined : new Date().toISOString()
       } as Task;
-      db.saveTask(updatedTask);
+      await db.saveTask(updatedTask);
       refreshGoals();
   };
 
-  const toggleGoalCompletion = (goal: Goal, e: React.MouseEvent) => {
+  const toggleGoalCompletion = async (goal: Goal, e: React.MouseEvent) => {
       e.stopPropagation();
       const updatedGoal = { ...goal, isCompleted: !goal.isCompleted };
-      db.saveGoal(updatedGoal);
+      await db.saveGoal(updatedGoal);
       refreshGoals();
   };
+
+  if (loading && goals.length === 0) return <div className="p-8 flex justify-center"><Loader2 className="animate-spin" /></div>;
 
   return (
     <div className="space-y-6 pb-20">
@@ -158,7 +161,6 @@ const Goals: React.FC = () => {
         )}
       </div>
 
-      {/* Creation/Edit Modal / Form Area */}
       {isCreating && (
         <div className="bg-white p-6 rounded-xl shadow-md border border-gray-200 animate-fade-in mb-6">
         <div className="flex justify-between mb-4">
@@ -225,7 +227,6 @@ const Goals: React.FC = () => {
                 />
             </div>
 
-            {/* Milestones Section in Form */}
             <div className="bg-gray-50 p-4 rounded-lg">
                 <div className="flex justify-between items-center mb-2">
                     <label className="block text-sm font-medium text-gray-700">Milestones</label>
@@ -267,7 +268,6 @@ const Goals: React.FC = () => {
         </div>
       )}
 
-      {/* Goals List */}
       <div className="grid grid-cols-1 gap-6">
         {goals.map((goal) => (
             <GoalCard 
@@ -293,6 +293,7 @@ const Goals: React.FC = () => {
   );
 };
 
+// ... GoalCard (Same as before but ensures types are correct)
 const GoalCard: React.FC<{
     goal: Goal; 
     linkedTasks: Task[];
@@ -389,7 +390,6 @@ const GoalCard: React.FC<{
                 
                 {expanded && (
                     <div className="px-6 pb-4 space-y-2 animate-fade-in">
-                        {/* Native Milestones */}
                         {goal.milestones.map(m => (
                             <div key={m.id} 
                                 onClick={() => onToggleMilestone(goal, m.id)}
@@ -405,7 +405,6 @@ const GoalCard: React.FC<{
                             </div>
                         ))}
 
-                        {/* Linked Tasks */}
                         {linkedTasks.map(t => (
                             <div key={t.id}
                                 onClick={() => onToggleLinkedTask(t)}
@@ -425,10 +424,6 @@ const GoalCard: React.FC<{
                                 </div>
                             </div>
                         ))}
-
-                        {totalItems === 0 && (
-                            <p className="text-sm text-gray-400 pl-8">No milestones or linked tasks.</p>
-                        )}
                     </div>
                 )}
             </div>

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { db } from '../services/db';
@@ -22,8 +21,13 @@ const Achievements: React.FC = () => {
   const [summary, setSummary] = useState('');
 
   useEffect(() => {
-    setAchievements(db.getAchievements().reverse());
+    refreshAchievements();
   }, []);
+
+  const refreshAchievements = async () => {
+    const data = await db.getAchievements();
+    setAchievements(data.reverse());
+  };
 
   const handleAIProcess = async () => {
     if (!description || !title) return;
@@ -43,11 +47,10 @@ const Achievements: React.FC = () => {
     setSummary(ach.summary);
     setEditingId(ach.id);
     setIsFormOpen(true);
-    // Scroll to form
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     const achId = editingId || crypto.randomUUID();
@@ -55,17 +58,17 @@ const Achievements: React.FC = () => {
 
     const newAchievement: Achievement = {
       id: achId,
-      userId: existing?.userId || user?.id || 'user-1',
+      userId: existing?.userId || user?.id || '',
       title,
       description,
       project,
       date,
       classification,
-      summary: summary || description, // Fallback if AI wasn't used
+      summary: summary || description,
       createdAt: existing?.createdAt || new Date().toISOString()
     };
-    db.saveAchievement(newAchievement);
-    setAchievements(db.getAchievements().reverse());
+    await db.saveAchievement(newAchievement);
+    refreshAchievements();
     resetForm();
   };
 
@@ -79,9 +82,9 @@ const Achievements: React.FC = () => {
     setSummary('');
   };
 
-  const handleDelete = (id: string) => {
-    db.deleteAchievement(id);
-    setAchievements(db.getAchievements().reverse());
+  const handleDelete = async (id: string) => {
+    await db.deleteAchievement(id);
+    refreshAchievements();
   };
 
   return (
@@ -126,7 +129,6 @@ const Achievements: React.FC = () => {
                     placeholder="Provide details..." />
              </div>
 
-             {/* AI Button */}
              <div className="flex justify-end">
                 <button type="button" onClick={handleAIProcess} disabled={isLoadingAI || !description}
                     className="text-primary text-sm font-medium flex items-center gap-1 hover:bg-blue-50 px-3 py-1 rounded transition-colors disabled:opacity-50">
@@ -158,18 +160,6 @@ const Achievements: React.FC = () => {
                  </div>
              </div>
              
-             {/* File Upload Mock */}
-             <div>
-                <label className="block text-sm font-medium text-gray-700">Evidence (Optional)</label>
-                <input type="file" className="mt-1 block w-full text-sm text-gray-500
-                  file:mr-4 file:py-2 file:px-4
-                  file:rounded-full file:border-0
-                  file:text-sm file:font-semibold
-                  file:bg-blue-50 file:text-primary
-                  hover:file:bg-blue-100" 
-                />
-             </div>
-
              <div className="flex justify-end gap-3 pt-2">
                 <button type="button" onClick={resetForm} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
                 <button type="submit" className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600">
@@ -180,7 +170,6 @@ const Achievements: React.FC = () => {
         </div>
       )}
 
-      {/* List */}
       <div className="space-y-4">
         {achievements.map((ach) => (
             <div key={ach.id} className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col md:flex-row gap-4">
@@ -194,11 +183,6 @@ const Achievements: React.FC = () => {
                          <span className="flex items-center text-xs text-gray-500 gap-1">
                             <Calendar size={12} /> {ach.date}
                          </span>
-                         {ach.project && (
-                            <span className="flex items-center text-xs text-gray-500 gap-1">
-                                <Folder size={12} /> {ach.project}
-                            </span>
-                         )}
                     </div>
                     <h3 className="text-lg font-bold text-gray-900">{ach.title}</h3>
                     <p className="text-gray-800 font-medium mt-1 italic text-sm bg-gray-50 p-2 rounded border border-gray-100 inline-block">
@@ -207,22 +191,8 @@ const Achievements: React.FC = () => {
                     <p className="text-gray-500 text-sm mt-2">{ach.description}</p>
                 </div>
                 <div className="flex md:flex-col justify-start md:justify-end items-end gap-2 mt-2 md:mt-0">
-                    <button 
-                        type="button" 
-                        onClick={(e) => { e.stopPropagation(); handleEdit(ach); }} 
-                        className="p-2 text-gray-400 hover:text-primary hover:bg-blue-50 rounded transition-colors" 
-                        title="Edit"
-                    >
-                        <Pencil size={18} />
-                    </button>
-                    <button 
-                        type="button" 
-                        onClick={(e) => { e.stopPropagation(); handleDelete(ach.id); }} 
-                        className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors" 
-                        title="Delete"
-                    >
-                        <Trash2 size={18} />
-                    </button>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); handleEdit(ach); }} className="p-2 text-gray-400 hover:text-primary hover:bg-blue-50 rounded transition-colors" title="Edit"><Pencil size={18} /></button>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); handleDelete(ach.id); }} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors" title="Delete"><Trash2 size={18} /></button>
                 </div>
             </div>
         ))}

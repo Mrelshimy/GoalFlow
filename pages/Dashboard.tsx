@@ -1,21 +1,32 @@
-
 import React, { useEffect, useState } from 'react';
 import { db } from '../services/db';
 import { Goal, Achievement, Task } from '../types';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { ArrowUpRight, Award, Target, TrendingUp, ListTodo } from 'lucide-react';
+import { ArrowUpRight, Award, Target, TrendingUp, ListTodo, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const Dashboard: React.FC = () => {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setGoals(db.getGoals());
-    setAchievements(db.getAchievements());
-    setTasks(db.getTasks());
+    const loadData = async () => {
+        const [g, a, t] = await Promise.all([
+            db.getGoals(),
+            db.getAchievements(),
+            db.getTasks()
+        ]);
+        setGoals(g);
+        setAchievements(a);
+        setTasks(t);
+        setLoading(false);
+    };
+    loadData();
   }, []);
+
+  if (loading) return <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-primary" /></div>;
 
   const totalGoals = goals.length;
   const completedGoals = goals.filter(g => g.progress === 100).length;

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
 import { Task, TaskList, Goal } from '../types';
@@ -8,13 +7,11 @@ import { useAuth } from '../App';
 const Tasks: React.FC = () => {
   const { user } = useAuth();
   
-  // Data State
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
   const [activeListId, setActiveListId] = useState<string>('');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
 
-  // UI State
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [showCompleted, setShowCompleted] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -22,101 +19,93 @@ const Tasks: React.FC = () => {
   const [newListName, setNewListName] = useState('');
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
-  // Initial Load
   useEffect(() => {
-    const lists = db.getTaskLists();
-    setTaskLists(lists);
-    setGoals(db.getGoals());
-    if (lists.length > 0) {
-        setActiveListId(lists[0].id);
-    }
+    const init = async () => {
+        const [lists, g] = await Promise.all([db.getTaskLists(), db.getGoals()]);
+        setTaskLists(lists);
+        setGoals(g);
+        if (lists.length > 0) setActiveListId(lists[0].id);
+    };
+    init();
   }, []);
 
-  // Fetch Tasks when list changes
   useEffect(() => {
-    if (activeListId) {
-        const allTasks = db.getTasks();
-        const listTasks = allTasks.filter(t => t.listId === activeListId);
-        setTasks(listTasks.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-    }
+    if (activeListId) refreshTasks();
   }, [activeListId]);
 
-  const refreshData = () => {
-    const allTasks = db.getTasks();
-    const listTasks = allTasks.filter(t => t.listId === activeListId);
-    setTasks(listTasks.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-    setTaskLists(db.getTaskLists());
+  const refreshTasks = async () => {
+      const allTasks = await db.getTasks();
+      const listTasks = allTasks.filter(t => t.listId === activeListId);
+      setTasks(listTasks.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
   };
 
-  // --- List Actions ---
-  const handleCreateList = (e: React.FormEvent) => {
+  const handleCreateList = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newListName.trim()) return;
     const newList: TaskList = {
         id: crypto.randomUUID(),
-        userId: user?.id || 'user-1',
+        userId: user?.id || '',
         title: newListName,
     };
-    db.saveTaskList(newList);
-    setTaskLists(db.getTaskLists());
+    await db.saveTaskList(newList);
+    const lists = await db.getTaskLists();
+    setTaskLists(lists);
     setActiveListId(newList.id);
     setNewListName('');
     setIsCreatingList(false);
   };
 
-  const handleDeleteList = (id: string, e: React.MouseEvent) => {
+  const handleDeleteList = async (id: string, e: React.MouseEvent) => {
       e.stopPropagation();
-      db.deleteTaskList(id);
-      const remaining = db.getTaskLists();
+      await db.deleteTaskList(id);
+      const remaining = await db.getTaskLists();
       setTaskLists(remaining);
       if (remaining.length > 0) setActiveListId(remaining[0].id);
   };
 
-  // --- Task Actions ---
-  const handleAddTask = (e: React.FormEvent) => {
+  const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTaskTitle.trim() || !activeListId) return;
 
     const newTask: Task = {
       id: crypto.randomUUID(),
-      userId: user?.id || 'user-1',
+      userId: user?.id || '',
       listId: activeListId,
       title: newTaskTitle,
       status: 'pending',
       createdAt: new Date().toISOString()
     };
 
-    db.saveTask(newTask);
+    await db.saveTask(newTask);
     setNewTaskTitle('');
-    refreshData();
+    refreshTasks();
   };
 
-  const handleToggleStatus = (task: Task) => {
+  const handleToggleStatus = async (task: Task) => {
     const updatedTask: Task = {
       ...task,
       status: task.status === 'pending' ? 'completed' : 'pending',
       completedAt: task.status === 'pending' ? new Date().toISOString() : undefined
     };
-    db.saveTask(updatedTask);
-    refreshData();
+    await db.saveTask(updatedTask);
+    refreshTasks();
   };
 
-  const handleDeleteTask = (id: string, e: React.MouseEvent) => {
+  const handleDeleteTask = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    db.deleteTask(id);
-    refreshData();
+    await db.deleteTask(id);
+    refreshTasks();
     if (activeTaskId === id) setActiveTaskId(null);
   };
 
-  const handleUpdateTask = (updatedTask: Task) => {
-      db.saveTask(updatedTask);
+  const handleUpdateTask = async (updatedTask: Task) => {
+      await db.saveTask(updatedTask);
       setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
   };
 
-  // --- Import Logic ---
   const handleImport = async (file: File) => {
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
         try {
             const content = event.target?.result as string;
             const parsed = JSON.parse(content);
@@ -126,51 +115,42 @@ const Tasks: React.FC = () => {
             let importCount = 0;
 
             if (isListOfLists) {
-                rawData.forEach((listData: any) => {
+                for (const listData of rawData) {
                     if (listData.title) {
-                        const newList: TaskList = {
-                            id: crypto.randomUUID(),
-                            userId: user?.id || 'user-1',
-                            title: listData.title
-                        };
-                        db.saveTaskList(newList);
+                        const newList = { id: crypto.randomUUID(), userId: user?.id || '', title: listData.title };
+                        await db.saveTaskList(newList);
                         const tasksToImport = listData.items || [];
-                        tasksToImport.forEach((t: any) => importSingleTask(t, newList.id));
+                        for (const t of tasksToImport) { await importSingleTask(t, newList.id); }
                         importCount += tasksToImport.length;
                     }
-                });
+                }
             } else {
                 const listName = file.name.replace(/\.json$/i, '') || 'Imported Tasks';
-                const newList: TaskList = {
-                    id: crypto.randomUUID(),
-                    userId: user?.id || 'user-1',
-                    title: listName
-                };
-                db.saveTaskList(newList);
-                rawData.forEach((t: any) => importSingleTask(t, newList.id));
+                const newList = { id: crypto.randomUUID(), userId: user?.id || '', title: listName };
+                await db.saveTaskList(newList);
+                for (const t of rawData) { await importSingleTask(t, newList.id); }
                 importCount += rawData.length;
                 setActiveListId(newList.id);
             }
 
             alert(`Successfully imported ${importCount} tasks.`);
             setIsImportModalOpen(false);
-            setTaskLists(db.getTaskLists());
-            refreshData();
+            setTaskLists(await db.getTaskLists());
+            refreshTasks();
 
         } catch (error) {
-            alert('Failed to parse JSON. Please upload a valid Google Tasks export.');
-            console.error(error);
+            alert('Failed to parse JSON.');
         }
     };
     reader.readAsText(file);
   };
 
-  const importSingleTask = (t: any, listId: string) => {
+  const importSingleTask = async (t: any, listId: string) => {
       if (!t.title) return;
       const isCompleted = t.status === 'completed';
       const newTask: Task = {
           id: crypto.randomUUID(),
-          userId: user?.id || 'user-1',
+          userId: user?.id || '',
           listId: listId,
           title: t.title,
           details: t.notes || '',
@@ -179,7 +159,7 @@ const Tasks: React.FC = () => {
           completedAt: isCompleted ? (t.completed ? new Date(t.completed).toISOString() : new Date().toISOString()) : undefined,
           createdAt: t.updated ? new Date(t.updated).toISOString() : new Date().toISOString()
       };
-      db.saveTask(newTask);
+      await db.saveTask(newTask);
   };
 
   const pendingTasks = tasks.filter(t => t.status === 'pending');
@@ -188,38 +168,18 @@ const Tasks: React.FC = () => {
 
   return (
     <div className="flex flex-col md:flex-row h-[calc(100vh-100px)] gap-6 pb-20 md:pb-0">
-        
-        {/* Sidebar / List Switcher */}
         <div className="w-full md:w-64 flex-shrink-0 bg-white md:bg-transparent rounded-xl md:rounded-none border md:border-none p-4 md:p-0">
             <div className="flex justify-between items-center mb-4 px-2">
                 <div className="flex items-center gap-2">
                     <h2 className="font-bold text-gray-700">My Lists</h2>
-                    <button 
-                        onClick={() => setIsImportModalOpen(true)}
-                        className="text-gray-400 hover:text-primary p-1 rounded transition-colors"
-                        title="Import from Google Tasks"
-                    >
-                        <Upload size={16} />
-                    </button>
+                    <button onClick={() => setIsImportModalOpen(true)} className="text-gray-400 hover:text-primary p-1 rounded transition-colors"><Upload size={16} /></button>
                 </div>
-                <button 
-                    onClick={() => setIsCreatingList(!isCreatingList)} 
-                    className="text-primary hover:bg-blue-50 p-1 rounded transition-colors"
-                >
-                    <Plus size={18} />
-                </button>
+                <button onClick={() => setIsCreatingList(!isCreatingList)} className="text-primary hover:bg-blue-50 p-1 rounded transition-colors"><Plus size={18} /></button>
             </div>
 
             {isCreatingList && (
                 <form onSubmit={handleCreateList} className="mb-4 px-2">
-                    <input 
-                        autoFocus
-                        type="text" 
-                        value={newListName}
-                        onChange={e => setNewListName(e.target.value)}
-                        placeholder="List name..."
-                        className="w-full border rounded px-2 py-1 text-sm mb-1"
-                    />
+                    <input autoFocus type="text" value={newListName} onChange={e => setNewListName(e.target.value)} placeholder="List name..." className="w-full border rounded px-2 py-1 text-sm mb-1" />
                     <div className="flex gap-2 justify-end">
                         <button type="button" onClick={() => setIsCreatingList(false)} className="text-xs text-gray-500">Cancel</button>
                         <button type="submit" className="text-xs text-primary font-medium">Create</button>
@@ -230,30 +190,18 @@ const Tasks: React.FC = () => {
             <ul className="space-y-1">
                 {taskLists.map(list => (
                     <li key={list.id} className="group flex items-center justify-between">
-                        <button 
-                            onClick={() => setActiveListId(list.id)}
-                            className={`flex-1 text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2
-                                ${activeListId === list.id ? 'bg-white text-primary shadow-sm border border-gray-100' : 'text-gray-600 hover:bg-gray-100'}
-                            `}
-                        >
+                        <button onClick={() => setActiveListId(list.id)} className={`flex-1 text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${activeListId === list.id ? 'bg-white text-primary shadow-sm border border-gray-100' : 'text-gray-600 hover:bg-gray-100'}`}>
                             <List size={16} />
                             {list.title}
                         </button>
                         {!list.isDefault && (
-                             <button 
-                                onClick={(e) => handleDeleteList(list.id, e)}
-                                type="button"
-                                className="p-1.5 text-gray-300 hover:text-red-500 transition-colors"
-                             >
-                                 <X size={14} />
-                             </button>
+                             <button onClick={(e) => handleDeleteList(list.id, e)} type="button" className="p-1.5 text-gray-300 hover:text-red-500 transition-colors"><X size={14} /></button>
                         )}
                     </li>
                 ))}
             </ul>
         </div>
 
-        {/* Main Tasks Area */}
         <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col overflow-hidden h-full relative">
             <div className="p-6 border-b border-gray-100 flex justify-between items-center">
                 <h1 className="text-xl font-bold text-gray-800">{activeList?.title || 'Tasks'}</h1>
@@ -261,61 +209,26 @@ const Tasks: React.FC = () => {
 
             <div className="flex-1 overflow-y-auto p-6">
                 <form onSubmit={handleAddTask} className="flex items-center gap-3 mb-6">
-                    <div className="p-2 bg-blue-50 text-primary rounded-full">
-                        <Plus size={20} />
-                    </div>
-                    <input 
-                        type="text" 
-                        value={newTaskTitle}
-                        onChange={(e) => setNewTaskTitle(e.target.value)}
-                        placeholder="Add a task..." 
-                        className="flex-1 outline-none text-gray-700 placeholder-gray-400 bg-transparent text-lg"
-                    />
-                    {newTaskTitle && (
-                        <button type="submit" className="text-sm font-medium text-primary hover:text-blue-700">
-                            Add
-                        </button>
-                    )}
+                    <div className="p-2 bg-blue-50 text-primary rounded-full"><Plus size={20} /></div>
+                    <input type="text" value={newTaskTitle} onChange={(e) => setNewTaskTitle(e.target.value)} placeholder="Add a task..." className="flex-1 outline-none text-gray-700 placeholder-gray-400 bg-transparent text-lg" />
+                    {newTaskTitle && <button type="submit" className="text-sm font-medium text-primary hover:text-blue-700">Add</button>}
                 </form>
 
                 <div className="space-y-1">
                     {pendingTasks.map(task => (
-                        <TaskItem 
-                            key={task.id} 
-                            task={task} 
-                            goals={goals}
-                            isActive={activeTaskId === task.id}
-                            onToggle={() => handleToggleStatus(task)}
-                            onClick={() => setActiveTaskId(activeTaskId === task.id ? null : task.id)}
-                            onDelete={(e) => handleDeleteTask(task.id, e)}
-                            onUpdate={handleUpdateTask}
-                        />
+                        <TaskItem key={task.id} task={task} goals={goals} isActive={activeTaskId === task.id} onToggle={() => handleToggleStatus(task)} onClick={() => setActiveTaskId(activeTaskId === task.id ? null : task.id)} onDelete={(e) => handleDeleteTask(task.id, e)} onUpdate={handleUpdateTask} />
                     ))}
                 </div>
 
                 {completedTasks.length > 0 && (
                     <div className="mt-8">
-                        <button 
-                            onClick={() => setShowCompleted(!showCompleted)}
-                            className="flex items-center gap-2 text-gray-500 font-medium hover:text-gray-700 mb-4"
-                        >
-                            {showCompleted ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                            Completed ({completedTasks.length})
+                        <button onClick={() => setShowCompleted(!showCompleted)} className="flex items-center gap-2 text-gray-500 font-medium hover:text-gray-700 mb-4">
+                            {showCompleted ? <ChevronUp size={18} /> : <ChevronDown size={18} />} Completed ({completedTasks.length})
                         </button>
-                        
                         {showCompleted && (
                             <div className="space-y-1 animate-fade-in">
                                 {completedTasks.map(task => (
-                                    <TaskItem 
-                                        key={task.id} 
-                                        task={task} 
-                                        goals={goals}
-                                        isActive={activeTaskId === task.id}
-                                        onToggle={() => handleToggleStatus(task)}
-                                        onClick={() => setActiveTaskId(activeTaskId === task.id ? null : task.id)}
-                                        onDelete={(e) => handleDeleteTask(task.id, e)}
-                                        onUpdate={handleUpdateTask}
-                                    />
+                                    <TaskItem key={task.id} task={task} goals={goals} isActive={activeTaskId === task.id} onToggle={() => handleToggleStatus(task)} onClick={() => setActiveTaskId(activeTaskId === task.id ? null : task.id)} onDelete={(e) => handleDeleteTask(task.id, e)} onUpdate={handleUpdateTask} />
                                 ))}
                             </div>
                         )}
@@ -327,36 +240,12 @@ const Tasks: React.FC = () => {
                 <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4 animate-fade-in">
                     <div className="bg-white w-full max-w-md rounded-xl shadow-xl p-6">
                         <div className="flex justify-between items-start mb-4">
-                            <div className="flex items-center gap-3">
-                                <div className="p-2 bg-blue-50 text-primary rounded-lg">
-                                    <FileJson size={24} />
-                                </div>
-                                <div>
-                                    <h3 className="text-lg font-bold text-gray-800">Import Tasks</h3>
-                                    <p className="text-xs text-gray-500">Upload your Google Tasks JSON file</p>
-                                </div>
-                            </div>
-                            <button onClick={() => setIsImportModalOpen(false)} className="text-gray-400 hover:text-gray-600">
-                                <X size={20} />
-                            </button>
+                            <h3 className="text-lg font-bold text-gray-800">Import Tasks</h3>
+                            <button onClick={() => setIsImportModalOpen(false)}><X size={20} /></button>
                         </div>
-
-                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:bg-gray-50 transition-colors cursor-pointer relative mb-4">
-                            <input 
-                                type="file" 
-                                accept=".json"
-                                onChange={(e) => e.target.files?.[0] && handleImport(e.target.files[0])}
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                            />
-                            <div className="flex flex-col items-center gap-2">
-                                <Upload className="text-gray-400" size={32} />
-                                <span className="text-sm text-gray-600 font-medium">Click to upload JSON</span>
-                            </div>
-                        </div>
-
-                        <div className="bg-blue-50 text-blue-800 p-3 rounded-lg text-xs flex gap-2 items-start">
-                            <AlertCircle size={16} className="shrink-0 mt-0.5" />
-                            <p>This will import all lists and tasks (including completed ones) found in the file.</p>
+                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer relative mb-4">
+                            <input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && handleImport(e.target.files[0])} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                            <div className="flex flex-col items-center gap-2"><Upload className="text-gray-400" size={32} /><span className="text-sm text-gray-600 font-medium">Click to upload JSON</span></div>
                         </div>
                     </div>
                 </div>
@@ -366,6 +255,7 @@ const Tasks: React.FC = () => {
   );
 };
 
+// ... TaskItem (same as before)
 const TaskItem: React.FC<{
     task: Task;
     goals: Goal[];

@@ -1,8 +1,8 @@
-
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { User } from './types';
 import { db } from './services/db';
+import { supabase } from './services/supabase';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Goals from './pages/Goals';
@@ -15,10 +15,11 @@ import Layout from './components/Layout';
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password?: string) => void;
-  signup: (name: string, email: string, password?: string) => void;
+  login: (email: string, password?: string) => Promise<void>;
+  signup: (name: string, email: string, password?: string) => Promise<void>;
   logout: () => void;
   refreshUser: () => void;
+  isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>(null!);
@@ -27,50 +28,54 @@ export const useAuth = () => useContext(AuthContext);
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Check for existing session
-    const currentUser = db.getCurrentUser();
-    if (currentUser) {
-      setUser(currentUser);
-    } else {
-      // Seed initial data if totally empty (e.g. fresh browser)
-      db.seed();
-    }
+    // Initial Session Check
+    db.getCurrentUser().then(u => {
+        setUser(u);
+        setIsLoading(false);
+        if (u) db.seed();
+    });
+
+    // Listen for Auth Changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+            const u = await db.getCurrentUser();
+            setUser(u);
+            if(u) db.seed();
+        } else if (event === 'SIGNED_OUT') {
+            setUser(null);
+        }
+        setIsLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const refreshUser = () => {
-    const currentUser = db.getCurrentUser();
+  const refreshUser = async () => {
+    const currentUser = await db.getCurrentUser();
     if (currentUser) setUser(currentUser);
   }
 
-  const login = (email: string, password?: string) => {
-    try {
-        const u = db.login(email, password);
-        setUser(u);
-    } catch (e) {
-        alert(e instanceof Error ? e.message : "Login failed");
-    }
+  const login = async (email: string, password?: string) => {
+     await db.login(email, password);
   };
 
-  const signup = (name: string, email: string, password?: string) => {
-    try {
-        const u = db.signup(name, email, password);
-        // Ensure user specific data structures exist (like default list)
-        db.seed(); 
-        setUser(u);
-    } catch (e) {
-        alert(e instanceof Error ? e.message : "Signup failed");
-    }
+  const signup = async (name: string, email: string, password?: string) => {
+     await db.signup(name, email, password);
   }
 
-  const logout = () => {
-    db.logout();
-    setUser(null);
+  const logout = async () => {
+    await db.logout();
   };
 
+  if (isLoading) {
+    return <div className="h-screen flex items-center justify-center bg-gray-50 text-gray-400">Loading...</div>;
+  }
+
   return (
-    <AuthContext.Provider value={{ user, login, signup, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, login, signup, logout, refreshUser, isLoading }}>
       <HashRouter>
         <Routes>
           <Route path="/login" element={!user ? <Login /> : <Navigate to="/" />} />

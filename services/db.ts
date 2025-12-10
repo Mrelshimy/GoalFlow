@@ -1,180 +1,137 @@
-
+import { supabase } from './supabase';
 import { Goal, Achievement, Habit, User, Milestone, Task, TaskList } from '../types';
 
-// Extended User type for internal DB storage including password
-interface DBUser extends User {
-  password?: string; // Optional for backward compatibility with existing mock data
-}
-
-// Initial Mock Data
-const MOCK_USER: DBUser = {
-  id: 'user-1',
-  name: 'Alex Johnson',
-  email: 'alex@example.com',
-  password: 'password123',
-  title: 'Senior Engineer'
-};
-
-const STORAGE_KEYS = {
-  USER: 'gf_user', // Current session user
-  USERS: 'gf_users', // Registered users list
-  GOALS: 'gf_goals',
-  ACHIEVEMENTS: 'gf_achievements',
-  HABITS: 'gf_habits',
-  TASKS: 'gf_tasks',
-  TASK_LISTS: 'gf_task_lists',
-};
+// Map Supabase Profile to App User
+const mapProfileToUser = (profile: any): User => ({
+  id: profile.id,
+  name: profile.full_name || profile.email?.split('@')[0] || 'User',
+  email: profile.email || '',
+  avatar: profile.avatar_url,
+  title: profile.job_title
+});
 
 class DBService {
-  // --- Helpers for Raw Data Access ---
-  private getRaw<T>(key: string): T[] {
-    const data = localStorage.getItem(key);
-    return data ? JSON.parse(data) : [];
-  }
+  
+  // --- Auth Wrappers ---
+  
+  async getCurrentUser(): Promise<User | null> {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return null;
 
-  private saveRaw<T>(key: string, data: T[]) {
-    localStorage.setItem(key, JSON.stringify(data));
-  }
+    // Fetch extra profile data
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', session.user.id)
+      .single();
 
-  // --- Auth ---
-  private getAllUsers(): DBUser[] {
-    return this.getRaw<DBUser>(STORAGE_KEYS.USERS);
-  }
-
-  // Simple mock hash (Base64) to avoid storing plain text
-  private hashPassword(password: string): string {
-    return btoa(password);
-  }
-
-  login(email: string, password?: string): User {
-    const users = this.getAllUsers();
+    if (profile) return mapProfileToUser(profile);
     
-    // Check registered users
-    const registeredUser = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-
-    if (registeredUser) {
-        // If the user exists, we MUST check the password
-        if (!password) throw new Error("Password is required.");
-        
-        // Check if password matches (hashed)
-        // Note: For existing demo data without password, we allow login or force update
-        if (registeredUser.password && registeredUser.password !== this.hashPassword(password)) {
-            throw new Error("Invalid email or password.");
-        }
-
-        // Create a session object without the password
-        const { password: _, ...userSession } = registeredUser;
-        localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userSession));
-        return userSession;
-    }
-
-    // Fallback for the very first run if no users exist at all
-    if (users.length === 0 && email === 'alex@example.com') {
-       const demoUser = { ...MOCK_USER, email };
-       localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(demoUser));
-       // Also save to registry so password check works next time
-       this.saveRaw(STORAGE_KEYS.USERS, [{...demoUser, password: this.hashPassword('password123')}]);
-       return demoUser;
-    }
-
-    throw new Error("User not found. Please sign up.");
-  }
-
-  signup(name: string, email: string, password?: string): User {
-    const users = this.getAllUsers();
-    
-    if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
-        throw new Error("User with this email already exists.");
-    }
-
-    if (!password) throw new Error("Password is required for signup.");
-
-    const newUser: DBUser = {
-        id: crypto.randomUUID(),
-        name,
-        email,
-        password: this.hashPassword(password)
+    // Fallback if profile trigger failed
+    return {
+      id: session.user.id,
+      name: session.user.user_metadata.full_name || 'User',
+      email: session.user.email || ''
     };
-
-    users.push(newUser);
-    this.saveRaw(STORAGE_KEYS.USERS, users);
-    
-    // Auto login (create session without password)
-    const { password: _, ...userSession } = newUser;
-    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userSession));
-    return userSession;
   }
 
-  logout() {
-    localStorage.removeItem(STORAGE_KEYS.USER);
+  async login(email: string, password?: string): Promise<User> {
+    if (!password) throw new Error("Password required");
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    if (!data.user) throw new Error("Login failed");
+    
+    return (await this.getCurrentUser()) as User;
   }
 
-  getCurrentUser(): User | null {
-    const data = localStorage.getItem(STORAGE_KEYS.USER);
-    return data ? JSON.parse(data) : null;
+  async signup(name: string, email: string, password?: string): Promise<User> {
+    if (!password) throw new Error("Password required");
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { full_name: name }
+      }
+    });
+    if (error) throw error;
+    if (!data.user) throw new Error("Signup failed");
+    
+    // Wait a moment for trigger to create profile
+    await new Promise(r => setTimeout(r, 1000));
+    return (await this.getCurrentUser()) as User;
   }
 
-  updateUser(updates: Partial<User> & { password?: string }): User {
-    const currentUser = this.getCurrentUser();
-    if (!currentUser) throw new Error("No active session");
+  async logout() {
+    await supabase.auth.signOut();
+  }
 
-    const allUsers = this.getAllUsers();
-    const userIndex = allUsers.findIndex(u => u.id === currentUser.id);
+  async updateUser(updates: Partial<User> & { password?: string }): Promise<User> {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error("No session");
 
-    if (userIndex === -1) throw new Error("User record not found");
+    // Update Password if provided
+    if (updates.password) {
+      const { error } = await supabase.auth.updateUser({ password: updates.password });
+      if (error) throw error;
+    }
 
-    const existingUser = allUsers[userIndex];
+    // Update Profile
+    const profileUpdates: any = {};
+    if (updates.name) profileUpdates.full_name = updates.name;
+    if (updates.title !== undefined) profileUpdates.job_title = updates.title;
+    if (updates.avatar !== undefined) profileUpdates.avatar_url = updates.avatar;
 
-    // Prepare updated user object
-    const updatedDBUser: DBUser = {
-        ...existingUser,
-        ...updates,
-        // Only update password if provided and not empty
-        password: updates.password ? this.hashPassword(updates.password) : existingUser.password
-    };
-    
-    // Remove password from updates object so it doesn't leak into the session object if we were doing object spread blindly on a User type
-    // (Though TS protects us, runtime safety is good)
-    
-    // Save to permanent storage
-    allUsers[userIndex] = updatedDBUser;
-    this.saveRaw(STORAGE_KEYS.USERS, allUsers);
+    if (Object.keys(profileUpdates).length > 0) {
+      const { error } = await supabase
+        .from('profiles')
+        .update(profileUpdates)
+        .eq('id', user.id);
+      if (error) throw error;
+    }
 
-    // Update Session
-    const { password: _, ...userSession } = updatedDBUser;
-    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userSession));
-
-    return userSession;
+    return (await this.getCurrentUser()) as User;
   }
 
   // --- Goals ---
-  getGoals(): Goal[] {
-    const user = this.getCurrentUser();
-    if (!user) return [];
-    return this.getRaw<Goal>(STORAGE_KEYS.GOALS).filter(g => g.userId === user.id);
+  
+  async getGoals(): Promise<Goal[]> {
+    const { data, error } = await supabase.from('goals').select('*');
+    if (error) { console.error(error); return []; }
+    
+    // Map snake_case DB to camelCase Types
+    return data.map((g: any) => ({
+        ...g,
+        userId: g.user_id,
+        isCompleted: g.is_completed,
+        completedAt: g.completed_at
+    }));
   }
 
-  saveGoal(goal: Goal): Goal {
-    const allGoals = this.getRaw<Goal>(STORAGE_KEYS.GOALS);
+  async saveGoal(goal: Goal): Promise<Goal> {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error("No user");
+
+    // Recalculate progress using DB count of tasks
+    // 1. Get linked tasks
+    const { data: linkedTasks } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('linked_goal_id', goal.id);
     
-    // Calculate progress logic (Using USER's tasks)
     let computedProgress = goal.progress;
-    
+
     if (goal.isCompleted) {
         computedProgress = 100;
         if (!goal.completedAt) goal.completedAt = new Date().toISOString();
     } else {
-        // Clear completedAt if reopened
         goal.completedAt = undefined;
-
-        const userTasks = this.getTasks(); // This gets CURRENT USER tasks
-        const linkedTasks = userTasks.filter(t => t.linkedGoalId === goal.id);
-
+        const tasks = linkedTasks || [];
+        
         const totalMilestones = goal.milestones.length;
         const completedMilestones = goal.milestones.filter(m => m.status === 'completed').length;
         
-        const totalTasks = linkedTasks.length;
-        const completedTasks = linkedTasks.filter(t => t.status === 'completed').length;
+        const totalTasks = tasks.length;
+        const completedTasks = tasks.filter((t: any) => t.status === 'completed').length;
 
         const totalItems = totalMilestones + totalTasks;
         const completedItems = completedMilestones + completedTasks;
@@ -182,198 +139,205 @@ class DBService {
         computedProgress = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : goal.progress;
     }
 
-    const goalToSave = { ...goal, progress: computedProgress };
+    // Prepare for DB
+    const dbGoal = {
+        id: goal.id,
+        user_id: user.id,
+        title: goal.title,
+        category: goal.category,
+        description: goal.description,
+        timeframe: goal.timeframe,
+        progress: computedProgress,
+        milestones: goal.milestones,
+        tags: goal.tags,
+        is_completed: goal.isCompleted,
+        completed_at: goal.completedAt,
+        created_at: goal.createdAt
+    };
 
-    const existingIndex = allGoals.findIndex((g) => g.id === goal.id);
-    if (existingIndex >= 0) {
-      allGoals[existingIndex] = goalToSave;
-    } else {
-      allGoals.push(goalToSave);
-    }
-    this.saveRaw(STORAGE_KEYS.GOALS, allGoals);
-    return goalToSave;
+    const { error } = await supabase.from('goals').upsert(dbGoal);
+    if (error) throw error;
+    
+    return { ...goal, progress: computedProgress };
   }
 
-  deleteGoal(id: string) {
-    const allGoals = this.getRaw<Goal>(STORAGE_KEYS.GOALS);
-    const newGoals = allGoals.filter((g) => g.id !== id);
-    this.saveRaw(STORAGE_KEYS.GOALS, newGoals);
-    
-    // Unlink tasks globally (safe because ID is UUID)
-    const allTasks = this.getRaw<Task>(STORAGE_KEYS.TASKS);
-    let tasksChanged = false;
-    const updatedTasks = allTasks.map(t => {
-        if (t.linkedGoalId === id) {
-            tasksChanged = true;
-            return { ...t, linkedGoalId: undefined };
-        }
-        return t;
-    });
-    if (tasksChanged) {
-        this.saveRaw(STORAGE_KEYS.TASKS, updatedTasks);
-    }
+  async deleteGoal(id: string) {
+    await supabase.from('goals').delete().eq('id', id);
+    // Linked tasks are set to null by ON DELETE SET NULL in SQL schema
   }
 
   // --- Task Lists ---
-  getTaskLists(): TaskList[] {
-    const user = this.getCurrentUser();
-    if (!user) return [];
-    return this.getRaw<TaskList>(STORAGE_KEYS.TASK_LISTS).filter(l => l.userId === user.id);
+
+  async getTaskLists(): Promise<TaskList[]> {
+    const { data, error } = await supabase.from('task_lists').select('*');
+    if (error) return [];
+    return data.map((l: any) => ({ ...l, userId: l.user_id, isDefault: l.is_default }));
   }
 
-  saveTaskList(list: TaskList): TaskList {
-    const allLists = this.getRaw<TaskList>(STORAGE_KEYS.TASK_LISTS);
-    const existingIndex = allLists.findIndex(l => l.id === list.id);
-    if (existingIndex >= 0) {
-      allLists[existingIndex] = list;
-    } else {
-      allLists.push(list);
-    }
-    this.saveRaw(STORAGE_KEYS.TASK_LISTS, allLists);
+  async saveTaskList(list: TaskList): Promise<TaskList> {
+    const { data: { user } } = await supabase.auth.getUser();
+    const dbList = {
+        id: list.id,
+        user_id: user?.id,
+        title: list.title,
+        is_default: list.isDefault
+    };
+    await supabase.from('task_lists').upsert(dbList);
     return list;
   }
 
-  deleteTaskList(id: string) {
-    const allLists = this.getRaw<TaskList>(STORAGE_KEYS.TASK_LISTS);
-    const listToDelete = allLists.find(l => l.id === id);
-    if (listToDelete?.isDefault) return;
+  async deleteTaskList(id: string) {
+    // Check if default
+    const { data } = await supabase.from('task_lists').select('is_default').eq('id', id).single();
+    if (data?.is_default) return;
 
-    const updatedLists = allLists.filter(l => l.id !== id);
-    this.saveRaw(STORAGE_KEYS.TASK_LISTS, updatedLists);
-
-    // Delete tasks in this list
-    const allTasks = this.getRaw<Task>(STORAGE_KEYS.TASKS);
-    const tasksToDelete = allTasks.filter(t => t.listId === id);
-    const remainingTasks = allTasks.filter(t => t.listId !== id);
-    this.saveRaw(STORAGE_KEYS.TASKS, remainingTasks);
-
-    // Trigger goal updates for deleted tasks that were linked
-    const userGoals = this.getGoals(); // Only update current user's goals
-    const uniqueGoalIds = new Set(tasksToDelete.map(t => t.linkedGoalId).filter(Boolean));
-    uniqueGoalIds.forEach(gid => {
-        const goal = userGoals.find(g => g.id === gid);
-        if (goal) this.saveGoal(goal);
-    });
+    await supabase.from('task_lists').delete().eq('id', id);
   }
 
   // --- Tasks ---
-  getTasks(): Task[] {
-    const user = this.getCurrentUser();
-    if (!user) return [];
-    return this.getRaw<Task>(STORAGE_KEYS.TASKS).filter(t => t.userId === user.id);
+
+  async getTasks(): Promise<Task[]> {
+    const { data, error } = await supabase.from('tasks').select('*');
+    if (error) return [];
+    return data.map((t: any) => ({
+        ...t,
+        userId: t.user_id,
+        listId: t.list_id,
+        linkedGoalId: t.linked_goal_id,
+        dueDate: t.due_date,
+        completedAt: t.completed_at,
+        createdAt: t.created_at
+    }));
   }
 
-  saveTask(task: Task): Task {
-    const allTasks = this.getRaw<Task>(STORAGE_KEYS.TASKS);
-    const existingIndex = allTasks.findIndex(t => t.id === task.id);
-    const previousTask = existingIndex >= 0 ? allTasks[existingIndex] : null;
-
-    if (existingIndex >= 0) {
-        allTasks[existingIndex] = task;
-    } else {
-        allTasks.push(task);
-    }
-    this.saveRaw(STORAGE_KEYS.TASKS, allTasks);
-
-    // Update Goal Progress if linked
-    const userGoals = this.getGoals();
+  async saveTask(task: Task): Promise<Task> {
+    const { data: { user } } = await supabase.auth.getUser();
     
-    if (task.linkedGoalId) {
-        const goal = userGoals.find(g => g.id === task.linkedGoalId);
-        if (goal) this.saveGoal(goal);
-    }
+    // Check previous state for goal update
+    const { data: existing } = await supabase.from('tasks').select('linked_goal_id').eq('id', task.id).single();
 
-    if (previousTask?.linkedGoalId && previousTask.linkedGoalId !== task.linkedGoalId) {
-         const goal = userGoals.find(g => g.id === previousTask.linkedGoalId);
-         if (goal) this.saveGoal(goal);
+    const dbTask = {
+        id: task.id,
+        user_id: user?.id,
+        list_id: task.listId,
+        linked_goal_id: task.linkedGoalId,
+        title: task.title,
+        details: task.details,
+        due_date: task.dueDate,
+        status: task.status,
+        completed_at: task.completedAt,
+        created_at: task.createdAt
+    };
+
+    const { error } = await supabase.from('tasks').upsert(dbTask);
+    if (error) throw error;
+
+    // Trigger goal progress updates
+    if (task.linkedGoalId) {
+        const goal = await this.getGoalById(task.linkedGoalId);
+        if (goal) await this.saveGoal(goal);
+    }
+    if (existing?.linked_goal_id && existing.linked_goal_id !== task.linkedGoalId) {
+        const goal = await this.getGoalById(existing.linked_goal_id);
+        if (goal) await this.saveGoal(goal);
     }
 
     return task;
   }
 
-  deleteTask(id: string) {
-    const allTasks = this.getRaw<Task>(STORAGE_KEYS.TASKS);
-    const taskToDelete = allTasks.find(t => t.id === id);
-    const updatedTasks = allTasks.filter(t => t.id !== id);
-    this.saveRaw(STORAGE_KEYS.TASKS, updatedTasks);
+  async deleteTask(id: string) {
+    // Get task before delete to find linked goal
+    const { data: task } = await supabase.from('tasks').select('linked_goal_id').eq('id', id).single();
+    
+    await supabase.from('tasks').delete().eq('id', id);
 
-    if (taskToDelete?.linkedGoalId) {
-        const userGoals = this.getGoals();
-        const goal = userGoals.find(g => g.id === taskToDelete.linkedGoalId);
-        if (goal) this.saveGoal(goal);
+    if (task?.linked_goal_id) {
+        const goal = await this.getGoalById(task.linked_goal_id);
+        if (goal) await this.saveGoal(goal);
     }
   }
 
   // --- Achievements ---
-  getAchievements(): Achievement[] {
-    const user = this.getCurrentUser();
-    if (!user) return [];
-    return this.getRaw<Achievement>(STORAGE_KEYS.ACHIEVEMENTS).filter(a => a.userId === user.id);
+
+  async getAchievements(): Promise<Achievement[]> {
+    const { data, error } = await supabase.from('achievements').select('*');
+    if (error) return [];
+    return data.map((a: any) => ({
+        ...a,
+        userId: a.user_id,
+        evidenceUrl: a.evidence_url,
+        createdAt: a.created_at
+    }));
   }
 
-  saveAchievement(achievement: Achievement): Achievement {
-    const list = this.getRaw<Achievement>(STORAGE_KEYS.ACHIEVEMENTS);
-    const existingIndex = list.findIndex((a) => a.id === achievement.id);
-    if (existingIndex >= 0) {
-      list[existingIndex] = achievement;
-    } else {
-      list.push(achievement);
-    }
-    this.saveRaw(STORAGE_KEYS.ACHIEVEMENTS, list);
+  async saveAchievement(achievement: Achievement): Promise<Achievement> {
+    const { data: { user } } = await supabase.auth.getUser();
+    const dbAch = {
+        id: achievement.id,
+        user_id: user?.id,
+        title: achievement.title,
+        description: achievement.description,
+        classification: achievement.classification,
+        summary: achievement.summary,
+        project: achievement.project,
+        date: achievement.date,
+        evidence_url: achievement.evidenceUrl,
+        created_at: achievement.createdAt
+    };
+    await supabase.from('achievements').upsert(dbAch);
     return achievement;
   }
 
-  deleteAchievement(id: string) {
-    const list = this.getRaw<Achievement>(STORAGE_KEYS.ACHIEVEMENTS);
-    const updated = list.filter((a) => a.id !== id);
-    this.saveRaw(STORAGE_KEYS.ACHIEVEMENTS, updated);
+  async deleteAchievement(id: string) {
+    await supabase.from('achievements').delete().eq('id', id);
   }
 
   // --- Habits ---
-  getHabits(): Habit[] {
-    const user = this.getCurrentUser();
-    if (!user) return [];
-    return this.getRaw<Habit>(STORAGE_KEYS.HABITS).filter(h => h.userId === user.id);
+
+  async getHabits(): Promise<Habit[]> {
+    const { data, error } = await supabase.from('habits').select('*');
+    if (error) return [];
+    return data.map((h: any) => ({
+        ...h,
+        userId: h.user_id,
+        streakCount: h.streak_count,
+        lastLoggedDate: h.last_logged_date
+    }));
   }
 
-  saveHabit(habit: Habit): Habit {
-    const list = this.getRaw<Habit>(STORAGE_KEYS.HABITS);
-    const existingIndex = list.findIndex((h) => h.id === habit.id);
-    if (existingIndex >= 0) {
-      list[existingIndex] = habit;
-    } else {
-      list.push(habit);
-    }
-    this.saveRaw(STORAGE_KEYS.HABITS, list);
+  async saveHabit(habit: Habit): Promise<Habit> {
+    const { data: { user } } = await supabase.auth.getUser();
+    const dbHabit = {
+        id: habit.id,
+        user_id: user?.id,
+        name: habit.name,
+        streak_count: habit.streakCount,
+        last_logged_date: habit.lastLoggedDate,
+        history: habit.history
+    };
+    await supabase.from('habits').upsert(dbHabit);
     return habit;
   }
 
-  toggleHabitForDate(habitId: string, date: string): Habit {
-    const allHabits = this.getRaw<Habit>(STORAGE_KEYS.HABITS);
-    const habitIndex = allHabits.findIndex(h => h.id === habitId);
-    if (habitIndex === -1) throw new Error("Habit not found");
+  async toggleHabitForDate(habitId: string, date: string): Promise<Habit> {
+    const { data: habit } = await supabase.from('habits').select('*').eq('id', habitId).single();
+    if (!habit) throw new Error("Not found");
 
-    const habit = allHabits[habitIndex];
-    const user = this.getCurrentUser();
-    if (habit.userId !== user?.id) throw new Error("Unauthorized");
-
-    const dateIndex = habit.history.indexOf(date);
-    
-    if (dateIndex >= 0) {
-      habit.history.splice(dateIndex, 1);
+    let history: string[] = habit.history || [];
+    if (history.includes(date)) {
+        history = history.filter(d => d !== date);
     } else {
-      habit.history.push(date);
+        history.push(date);
     }
-    
-    // Recalculate streak
-    const sortedHistory = [...habit.history].sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+
+    // Recalculate streak logic (simplified reuse)
+    const sortedHistory = [...history].sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
     let streak = 0;
     const today = new Date().toISOString().split('T')[0];
     
     if (sortedHistory.length > 0) {
         let currentCheck = new Date(sortedHistory[0]);
         const todayDate = new Date(today);
-        
         const diffHours = (todayDate.getTime() - currentCheck.getTime()) / (1000 * 3600);
         
         if (diffHours <= 48) {
@@ -382,95 +346,63 @@ class DBService {
               const curr = new Date(sortedHistory[i]);
               const prev = new Date(sortedHistory[i+1]);
               const diffDays = Math.round((curr.getTime() - prev.getTime()) / (1000 * 3600 * 24));
-              if (diffDays === 1) {
-                  streak++;
-              } else {
-                  break;
-              }
+              if (diffDays === 1) streak++; else break;
            }
         }
     }
-    
-    habit.streakCount = streak;
-    habit.lastLoggedDate = sortedHistory[0] || '';
 
-    allHabits[habitIndex] = habit;
-    this.saveRaw(STORAGE_KEYS.HABITS, allHabits);
-    return habit;
+    const updated = {
+        ...habit,
+        history,
+        streak_count: streak,
+        last_logged_date: sortedHistory[0] || ''
+    };
+
+    await supabase.from('habits').update({
+        history: updated.history,
+        streak_count: updated.streak_count,
+        last_logged_date: updated.last_logged_date
+    }).eq('id', habitId);
+
+    return {
+        ...updated,
+        userId: updated.user_id,
+        streakCount: updated.streak_count,
+        lastLoggedDate: updated.last_logged_date
+    };
   }
 
-  // --- Seed Data ---
-  seed() {
-    const user = this.getCurrentUser();
+  // --- Helper ---
+  async getGoalById(id: string): Promise<Goal | null> {
+    const { data } = await supabase.from('goals').select('*').eq('id', id).single();
+    if (!data) return null;
+    return {
+        ...data,
+        userId: data.user_id,
+        isCompleted: data.is_completed,
+        completedAt: data.completed_at
+    };
+  }
+
+  // Seed default data for new user
+  async seed() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
     
-    // Ensure default list exists for CURRENT user
-    if (user) {
-        const allLists = this.getRaw<TaskList>(STORAGE_KEYS.TASK_LISTS);
-        const userList = allLists.find(l => l.userId === user.id);
-        if (!userList) {
-             const defaultList: TaskList = {
-                id: crypto.randomUUID(),
-                userId: user.id,
-                title: 'My Tasks',
-                isDefault: true
-            };
-            allLists.push(defaultList);
-            this.saveRaw(STORAGE_KEYS.TASK_LISTS, allLists);
-        }
-    }
-    
-    // Only seed global demo data if totally empty
-    if (!localStorage.getItem(STORAGE_KEYS.USERS)) {
-       // Seed the mock user with password
-       this.saveRaw(STORAGE_KEYS.USERS, [{
-           ...MOCK_USER,
-           password: this.hashPassword(MOCK_USER.password || 'password123')
-       }]);
-
-       // Seed Goal
-       const demoGoals: Goal[] = [{
-          id: 'g1',
-          userId: 'user-1',
-          title: 'Become Senior Engineer',
-          category: 'Career' as any,
-          description: 'Get promoted to Senior Frontend Engineer by Q4.',
-          timeframe: '2024',
-          progress: 33,
-          createdAt: new Date().toISOString(),
-          milestones: [
-            { id: 'm1', goalId: 'g1', description: 'Lead a major feature release', status: 'completed', dueDate: '2024-03-01' },
-            { id: 'm2', goalId: 'g1', description: 'Mentor a junior dev', status: 'pending', dueDate: '2024-06-01' },
-            { id: 'm3', goalId: 'g1', description: 'Complete system architecture course', status: 'pending', dueDate: '2024-09-01' },
-          ]
-       }];
-       this.saveRaw(STORAGE_KEYS.GOALS, demoGoals);
-
-       // Seed Achievement
-       const demoAch: Achievement[] = [{
-          id: 'a1',
-          userId: 'user-1',
-          title: 'Optimized Login Flow',
-          description: 'Reduced login time by 40% by refactoring auth state management.',
-          classification: 'Delivery' as any,
-          summary: 'Delivered significant performance improvement to core authentication module.',
-          project: 'Core Platform',
-          date: '2024-02-15',
-          createdAt: new Date().toISOString()
-       }];
-       this.saveRaw(STORAGE_KEYS.ACHIEVEMENTS, demoAch);
-       
-       // Seed List and Task
-       const listId = 'list-default';
-       const defaultList: TaskList = { id: listId, userId: 'user-1', title: 'My Tasks', isDefault: true };
-       this.saveRaw(STORAGE_KEYS.TASK_LISTS, [defaultList]);
-
-       const demoTasks: Task[] = [
-            { id: 't1', listId: listId, userId: 'user-1', title: 'Review PR #405', details: 'Check for security vulnerabilities', status: 'pending', createdAt: new Date().toISOString() },
-            { id: 't2', listId: listId, userId: 'user-1', title: 'Prepare 1:1 agenda', details: '', status: 'completed', completedAt: new Date().toISOString(), createdAt: new Date().toISOString() }
-       ];
-       this.saveRaw(STORAGE_KEYS.TASKS, demoTasks);
+    // Check if user has default list
+    const { data: lists } = await supabase.from('task_lists').select('*').eq('user_id', user.id);
+    if (!lists || lists.length === 0) {
+        await supabase.from('task_lists').insert({
+            user_id: user.id,
+            title: 'My Tasks',
+            is_default: true
+        });
     }
   }
+
+  // Legacy/File Backup (Deprecating for Sync, but keeping interface)
+  async exportBackup() { return null; }
+  async importBackup() { return null; }
 }
 
 export const db = new DBService();
