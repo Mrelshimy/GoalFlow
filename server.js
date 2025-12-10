@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -40,7 +41,8 @@ app.post('/api/generate', async (req, res) => {
     });
 
     // Helper to get text from response similar to SDK
-    const text = response.text(); 
+    // CRITICAL FIX: Access .text as a property, NOT a method
+    const text = response.text; 
     
     // Send back a shape that the client expects (mocking the SDK response structure slightly)
     res.json({ text });
