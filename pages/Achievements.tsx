@@ -1,11 +1,13 @@
 
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../App';
 import { db } from '../services/db';
 import { classifyAndSummarizeAchievement } from '../services/geminiService';
 import { Achievement, AchievementType } from '../types';
 import { Plus, Wand2, Trash2, Calendar, Folder, Pencil } from 'lucide-react';
 
 const Achievements: React.FC = () => {
+  const { user } = useAuth();
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -53,7 +55,7 @@ const Achievements: React.FC = () => {
 
     const newAchievement: Achievement = {
       id: achId,
-      userId: existing?.userId || 'user-1',
+      userId: existing?.userId || user?.id || 'user-1',
       title,
       description,
       project,

@@ -1,10 +1,13 @@
+
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../App';
 import { db } from '../services/db';
 import { generateReflection } from '../services/geminiService';
 import { Habit } from '../types';
 import { Plus, Check, Flame, Sparkles } from 'lucide-react';
 
 const Personal: React.FC = () => {
+  const { user } = useAuth();
   const [habits, setHabits] = useState<Habit[]>([]);
   const [newHabitName, setNewHabitName] = useState('');
   const [reflection, setReflection] = useState('');
@@ -19,7 +22,7 @@ const Personal: React.FC = () => {
     if (!newHabitName) return;
     const h: Habit = {
         id: crypto.randomUUID(),
-        userId: 'user-1',
+        userId: user?.id || 'user-1',
         name: newHabitName,
         streakCount: 0,
         lastLoggedDate: '',
