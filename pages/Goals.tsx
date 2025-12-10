@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { db } from '../services/db';
@@ -22,6 +23,11 @@ const Goals: React.FC = () => {
   const [description, setDescription] = useState('');
   const [timeframe, setTimeframe] = useState('');
   const [newMilestones, setNewMilestones] = useState<Omit<Milestone, 'id' | 'goalId'>[]>([]);
+
+  // Manual Milestone State
+  const [milestoneInput, setMilestoneInput] = useState('');
+  const [milestoneDateInput, setMilestoneDateInput] = useState('');
+  const [editingMilestoneIndex, setEditingMilestoneIndex] = useState<number | null>(null);
 
   useEffect(() => {
     refreshGoals();
@@ -51,6 +57,49 @@ const Goals: React.FC = () => {
     setIsLoadingAI(false);
   };
 
+  const handleAddMilestone = () => {
+    if (!milestoneInput) return;
+    
+    const newM: Omit<Milestone, 'id' | 'goalId'> = {
+        description: milestoneInput,
+        dueDate: milestoneDateInput,
+        status: 'pending'
+    };
+
+    if (editingMilestoneIndex !== null) {
+        const updated = [...newMilestones];
+        updated[editingMilestoneIndex] = {
+            ...updated[editingMilestoneIndex],
+            description: milestoneInput,
+            dueDate: milestoneDateInput
+        };
+        setNewMilestones(updated);
+        setEditingMilestoneIndex(null);
+    } else {
+        setNewMilestones([...newMilestones, newM]);
+    }
+    
+    setMilestoneInput('');
+    setMilestoneDateInput('');
+  };
+
+  const handleEditMilestoneLocal = (index: number) => {
+    const m = newMilestones[index];
+    setMilestoneInput(m.description);
+    setMilestoneDateInput(m.dueDate);
+    setEditingMilestoneIndex(index);
+  };
+
+  const handleDeleteMilestoneLocal = (index: number) => {
+    const updated = newMilestones.filter((_, i) => i !== index);
+    setNewMilestones(updated);
+    if (editingMilestoneIndex === index) {
+        setEditingMilestoneIndex(null);
+        setMilestoneInput('');
+        setMilestoneDateInput('');
+    }
+  };
+
   const handleEdit = (goal: Goal) => {
     setTitle(goal.title);
     setCategory(goal.category);
@@ -63,6 +112,10 @@ const Goals: React.FC = () => {
     })));
     setEditingId(goal.id);
     setIsCreating(true);
+    // Reset manual inputs just in case
+    setMilestoneInput('');
+    setMilestoneDateInput('');
+    setEditingMilestoneIndex(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -106,13 +159,15 @@ const Goals: React.FC = () => {
     setDescription('');
     setTimeframe('');
     setNewMilestones([]);
+    setMilestoneInput('');
+    setMilestoneDateInput('');
+    setEditingMilestoneIndex(null);
   };
 
   const handleDelete = async (id: string) => {
-    if(confirm("Delete this goal?")) {
-        await db.deleteGoal(id);
-        refreshGoals();
-    }
+    // Note: removed confirm dialog as per previous requests
+    await db.deleteGoal(id);
+    refreshGoals();
   };
 
   const toggleMilestone = async (goal: Goal, milestoneId: string) => {
@@ -228,7 +283,7 @@ const Goals: React.FC = () => {
             </div>
 
             <div className="bg-gray-50 p-4 rounded-lg">
-                <div className="flex justify-between items-center mb-2">
+                <div className="flex justify-between items-center mb-3">
                     <label className="block text-sm font-medium text-gray-700">Milestones</label>
                     <button 
                         type="button"
@@ -239,22 +294,66 @@ const Goals: React.FC = () => {
                         <Wand2 size={12} /> AI Generate
                     </button>
                 </div>
+                
+                {/* Manual Milestone Input */}
+                <div className="flex gap-2 mb-4">
+                    <input 
+                        type="text" 
+                        value={milestoneInput}
+                        onChange={e => setMilestoneInput(e.target.value)}
+                        placeholder="Add milestone..."
+                        className="flex-1 text-sm border border-gray-300 rounded-md p-2"
+                    />
+                     <input 
+                        type="date" 
+                        value={milestoneDateInput}
+                        onChange={e => setMilestoneDateInput(e.target.value)}
+                        className="w-32 text-sm border border-gray-300 rounded-md p-2"
+                    />
+                    <button 
+                        type="button"
+                        onClick={handleAddMilestone}
+                        disabled={!milestoneInput}
+                        className="bg-primary text-white p-2 rounded-md hover:bg-blue-600 disabled:opacity-50"
+                    >
+                        {editingMilestoneIndex !== null ? <CheckCircle size={18} /> : <Plus size={18} />}
+                    </button>
+                </div>
+
                 {newMilestones.length > 0 ? (
                     <ul className="space-y-2">
                         {newMilestones.map((m, idx) => (
-                            <li key={idx} className="flex gap-2 text-sm bg-white p-2 rounded border border-gray-200 items-center justify-between">
-                                <div className="flex gap-2 items-center">
-                                    <span className="font-semibold text-gray-500 text-xs">{m.dueDate}:</span>
+                            <li key={idx} className="flex gap-2 text-sm bg-white p-2 rounded border border-gray-200 items-center justify-between group">
+                                <div className="flex gap-2 items-center flex-1">
+                                    <span className="font-semibold text-gray-500 text-xs w-20 shrink-0">{m.dueDate || 'No Date'}</span>
                                     <span>{m.description}</span>
                                 </div>
-                                <span className={`text-[10px] px-2 rounded-full ${m.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                                    {m.status}
-                                </span>
+                                <div className="flex items-center gap-2">
+                                    <span className={`text-[10px] px-2 rounded-full ${m.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                        {m.status}
+                                    </span>
+                                    <div className="flex gap-1 ml-2">
+                                        <button 
+                                            type="button" 
+                                            onClick={() => handleEditMilestoneLocal(idx)} 
+                                            className="text-gray-400 hover:text-primary"
+                                        >
+                                            <Pencil size={14} />
+                                        </button>
+                                        <button 
+                                            type="button" 
+                                            onClick={() => handleDeleteMilestoneLocal(idx)} 
+                                            className="text-gray-400 hover:text-red-500"
+                                        >
+                                            <Trash2 size={14} />
+                                        </button>
+                                    </div>
+                                </div>
                             </li>
                         ))}
                     </ul>
                 ) : (
-                    <p className="text-xs text-gray-400 italic">No milestones yet. Use AI to generate them.</p>
+                    <p className="text-xs text-gray-400 italic">No milestones yet. Use AI to generate or add manually.</p>
                 )}
             </div>
 
