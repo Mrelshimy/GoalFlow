@@ -1,10 +1,14 @@
 
+export type UserRole = 'employee' | 'department_head';
+
 export interface User {
   id: string;
   name: string;
   email: string;
   avatar?: string; // Base64 image string
   title?: string; // Job Title
+  role: UserRole;
+  department?: string;
 }
 
 export enum GoalCategory {
@@ -97,7 +101,12 @@ export interface KPI {
   unit?: string;
   linkedGoalIds: string[];
   notes?: string;
+  level: 'individual' | 'department';
+  parentKpiId?: string;
   createdAt: string;
+  
+  // Computed fields (for UI)
+  ownerName?: string;
 }
 
 export interface ReportConfig {

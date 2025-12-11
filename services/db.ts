@@ -8,7 +8,9 @@ const mapProfileToUser = (profile: any): User => ({
   name: profile.full_name || profile.email?.split('@')[0] || 'User',
   email: profile.email || '',
   avatar: profile.avatar_url,
-  title: profile.job_title
+  title: profile.job_title,
+  role: profile.role || 'employee',
+  department: profile.department
 });
 
 class DBService {
@@ -32,7 +34,8 @@ class DBService {
     return {
       id: session.user.id,
       name: session.user.user_metadata.full_name || 'User',
-      email: session.user.email || ''
+      email: session.user.email || '',
+      role: 'employee'
     };
   }
 
@@ -81,6 +84,8 @@ class DBService {
     if (updates.name) profileUpdates.full_name = updates.name;
     if (updates.title !== undefined) profileUpdates.job_title = updates.title;
     if (updates.avatar !== undefined) profileUpdates.avatar_url = updates.avatar;
+    if (updates.role !== undefined) profileUpdates.role = updates.role;
+    if (updates.department !== undefined) profileUpdates.department = updates.department;
 
     if (Object.keys(profileUpdates).length > 0) {
       const { error } = await supabase
@@ -91,6 +96,27 @@ class DBService {
     }
 
     return (await this.getCurrentUser()) as User;
+  }
+
+  // --- Team / Department Management ---
+
+  async getEmployees(department: string): Promise<User[]> {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('department', department)
+      .eq('role', 'employee'); // Only fetch employees, not other heads
+    
+    if (error) { console.error(error); return []; }
+    return data.map(mapProfileToUser);
+  }
+
+  async addEmployeeToDepartment(email: string, department: string): Promise<void> {
+    const { error } = await supabase.rpc('add_employee_to_dept', {
+        target_email: email,
+        target_dept: department
+    });
+    if (error) throw new Error(error.message);
   }
 
   // --- Goals ---
@@ -261,7 +287,14 @@ class DBService {
   // --- KPIs ---
 
   async getKPIs(): Promise<KPI[]> {
-    const { data, error } = await supabase.from('kpis').select('*');
+    // With new policy, this fetches OWN + TEAM KPIs
+    const { data, error } = await supabase
+        .from('kpis')
+        .select(`
+            *,
+            profiles:user_id ( full_name )
+        `);
+    
     if (error) return [];
     
     return data.map((k: any) => ({
@@ -269,19 +302,49 @@ class DBService {
         userId: k.user_id,
         targetValue: k.target_value,
         currentValue: k.current_value,
-        weight: k.weight || 1, // Fallback for existing records
+        weight: k.weight || 1, 
         linkedGoalIds: k.linked_goal_ids || [],
-        createdAt: k.created_at
+        level: k.level || 'individual',
+        parentKpiId: k.parent_kpi_id,
+        createdAt: k.created_at,
+        ownerName: k.profiles?.full_name
+    }));
+  }
+
+  // Specialized fetch for linking purposes (KPIs of employees in current user's department)
+  async getDepartmentEmployeeKPIs(): Promise<KPI[]> {
+    const user = await this.getCurrentUser();
+    if (!user || !user.department) return [];
+
+    const { data, error } = await supabase
+        .from('kpis')
+        .select(`*, profiles!inner(*)`)
+        .eq('profiles.department', user.department)
+        .neq('user_id', user.id); // Exclude self (Dept Head)
+        
+    if (error) { console.error(error); return []; }
+    
+    return data.map((k: any) => ({
+        ...k,
+        userId: k.user_id,
+        targetValue: k.target_value,
+        currentValue: k.current_value,
+        weight: k.weight || 1,
+        linkedGoalIds: k.linked_goal_ids || [],
+        level: k.level || 'individual',
+        parentKpiId: k.parent_kpi_id,
+        createdAt: k.created_at,
+        ownerName: k.profiles?.full_name
     }));
   }
 
   async saveKPI(kpi: KPI): Promise<KPI> {
-    const user = await this.getCurrentUser();
-    if (!user) throw new Error("User session not found");
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error("No session");
 
     const dbKPI: any = {
         id: kpi.id,
-        user_id: user.id,
+        user_id: kpi.userId || user.id, // Preserve original owner if editing someone else's
         name: kpi.name,
         description: kpi.description,
         type: kpi.type,
@@ -290,19 +353,25 @@ class DBService {
         weight: kpi.weight,
         unit: kpi.unit,
         notes: kpi.notes,
-        created_at: kpi.createdAt
+        level: kpi.level,
+        parent_kpi_id: kpi.parentKpiId,
+        created_at: kpi.createdAt,
+        linked_goal_ids: kpi.linkedGoalIds || []
     };
-
-    // Only add linked_goal_ids if necessary, to avoid errors if column is missing in older schemas
-    if (kpi.linkedGoalIds && kpi.linkedGoalIds.length > 0) {
-        dbKPI.linked_goal_ids = kpi.linkedGoalIds;
-    } else {
-        dbKPI.linked_goal_ids = [];
-    }
 
     const { error } = await supabase.from('kpis').upsert(dbKPI);
     if (error) throw new Error(error.message);
     return kpi;
+  }
+
+  async linkChildKPIs(parentKpiId: string, childKpiIds: string[]) {
+      // 1. Clear old links for this parent (set parent_kpi_id to null where it was this parent)
+      await supabase.from('kpis').update({ parent_kpi_id: null }).eq('parent_kpi_id', parentKpiId);
+      
+      // 2. Set new links
+      if (childKpiIds.length > 0) {
+          await supabase.from('kpis').update({ parent_kpi_id: parentKpiId }).in('id', childKpiIds);
+      }
   }
 
   async deleteKPI(id: string) {

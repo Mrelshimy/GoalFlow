@@ -13,6 +13,7 @@ import Personal from './pages/Personal';
 import Tasks from './pages/Tasks';
 import KPIs from './pages/KPIs';
 import Profile from './pages/Profile';
+import Team from './pages/Team';
 import Layout from './components/Layout';
 
 interface AuthContextType {
@@ -91,6 +92,7 @@ const App: React.FC = () => {
             <Route path="reports" element={<Reports />} />
             <Route path="personal" element={<Personal />} />
             <Route path="profile" element={<Profile />} />
+            <Route path="team" element={<Team />} />
           </Route>
         </Routes>
       </HashRouter>

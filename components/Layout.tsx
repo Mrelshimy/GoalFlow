@@ -11,7 +11,8 @@ import {
   Menu,
   X,
   ListTodo,
-  TrendingUp
+  TrendingUp,
+  Users
 } from 'lucide-react';
 import { useAuth } from '../App';
 
@@ -29,6 +30,10 @@ const Layout: React.FC = () => {
     { name: 'Reports', path: '/reports', icon: FileText },
     { name: 'Personal', path: '/personal', icon: UserCircle },
   ];
+
+  if (user?.role === 'department_head') {
+      navItems.splice(5, 0, { name: 'Team', path: '/team', icon: Users });
+  }
 
   const handleLogout = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -80,7 +85,7 @@ const Layout: React.FC = () => {
             <UserAvatar />
             <div className="flex-1 overflow-hidden">
               <p className="text-sm font-medium truncate text-gray-900">{user?.name}</p>
-              <p className="text-xs text-gray-500 truncate">{user?.title || user?.email}</p>
+              <p className="text-xs text-gray-500 truncate">{user?.role === 'department_head' ? 'Dept. Head' : user?.title || user?.email}</p>
             </div>
             <button onClick={handleLogout} className="text-gray-400 hover:text-red-500 p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
               <LogOut size={18} />

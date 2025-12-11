@@ -1,7 +1,9 @@
+
 import React, { useState, useRef } from 'react';
 import { useAuth } from '../App';
 import { db } from '../services/db';
-import { User as UserIcon, Camera, Save, Lock, Mail, Briefcase } from 'lucide-react';
+import { UserRole } from '../types';
+import { User as UserIcon, Camera, Save, Lock, Mail, Briefcase, Building2, Crown } from 'lucide-react';
 
 const Profile: React.FC = () => {
   const { user, refreshUser } = useAuth();
@@ -10,6 +12,8 @@ const Profile: React.FC = () => {
   const [name, setName] = useState(user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
   const [title, setTitle] = useState(user?.title || '');
+  const [role, setRole] = useState<UserRole>(user?.role || 'employee');
+  const [department, setDepartment] = useState(user?.department || '');
   const [newPassword, setNewPassword] = useState('');
   const [avatar, setAvatar] = useState(user?.avatar || '');
   const [isSaving, setIsSaving] = useState(false);
@@ -41,6 +45,8 @@ const Profile: React.FC = () => {
             email,
             title,
             avatar,
+            role,
+            department: department || undefined,
             password: newPassword || undefined
         });
         
@@ -89,6 +95,30 @@ const Profile: React.FC = () => {
                             <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
                             <div className="relative"><Mail className="absolute left-3 top-2.5 text-gray-400" size={18} /><input type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-100 focus:border-primary outline-none" /></div>
                         </div>
+
+                        {/* Role & Dept Section - For Demo Purposes Editable */}
+                        <div className="md:col-span-2 pt-4 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-6">
+                             <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                                <div className="relative">
+                                    <Crown className="absolute left-3 top-2.5 text-gray-400" size={18} />
+                                    <select 
+                                        value={role} 
+                                        onChange={e => setRole(e.target.value as UserRole)}
+                                        className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-100 focus:border-primary outline-none bg-white"
+                                    >
+                                        <option value="employee">Employee</option>
+                                        <option value="department_head">Department Head</option>
+                                    </select>
+                                </div>
+                                <p className="text-[10px] text-gray-400 mt-1">Set to Dept. Head to manage team KPIs.</p>
+                             </div>
+                             <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Department</label>
+                                <div className="relative"><Building2 className="absolute left-3 top-2.5 text-gray-400" size={18} /><input type="text" value={department} onChange={e => setDepartment(e.target.value)} placeholder="e.g. Sales" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-100 focus:border-primary outline-none" /></div>
+                             </div>
+                        </div>
+
                         <div className="md:col-span-2 pt-4 border-t border-gray-100">
                              <h3 className="text-sm font-semibold text-gray-800 mb-4 flex items-center gap-2"><Lock size={16} /> Security</h3>
                              <div>

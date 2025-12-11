@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { db } from '../services/db';
 import { KPI, Goal } from '../types';
-import { Plus, X, Save, TrendingUp, Target, Activity, Filter, Trash2, ArrowRight, Loader2, Pencil, Scale } from 'lucide-react';
+import { Plus, X, Save, TrendingUp, Target, Activity, Filter, Trash2, ArrowRight, Loader2, Pencil, Scale, Users, Link as LinkIcon, Building2 } from 'lucide-react';
 
 const KPIs: React.FC = () => {
   const { user } = useAuth();
@@ -11,6 +11,7 @@ const KPIs: React.FC = () => {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [sortOption, setSortOption] = useState<'name' | 'progress_asc' | 'progress_desc'>('name');
+  const [filterLevel, setFilterLevel] = useState<'all' | 'individual' | 'department'>('all');
 
   // Modal States
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -25,7 +26,12 @@ const KPIs: React.FC = () => {
   const [targetValue, setTargetValue] = useState<string>('');
   const [currentValue, setCurrentValue] = useState<string>('0');
   const [weight, setWeight] = useState<string>('1');
+  const [level, setLevel] = useState<'individual' | 'department'>('individual');
   const [selectedGoalIds, setSelectedGoalIds] = useState<string[]>([]);
+  
+  // Linking Children State (For Dept Heads)
+  const [availableChildKPIs, setAvailableChildKPIs] = useState<KPI[]>([]);
+  const [selectedChildKpiIds, setSelectedChildKpiIds] = useState<string[]>([]);
 
   // Update Progress State
   const [progressUpdateId, setProgressUpdateId] = useState<string | null>(null);
@@ -52,16 +58,25 @@ const KPIs: React.FC = () => {
     }
   };
 
+  // When opening Create Modal as Dept Head, fetch potential children
+  const fetchAvailableChildren = async () => {
+      if (user?.role === 'department_head') {
+          const children = await db.getDepartmentEmployeeKPIs();
+          setAvailableChildKPIs(children);
+      }
+  };
+
   const generateId = () => {
     return (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
   };
 
   const handleOpenCreate = () => {
     resetForm();
+    if (user?.role === 'department_head') fetchAvailableChildren();
     setIsCreateOpen(true);
   };
 
-  const handleOpenEdit = (kpi: KPI) => {
+  const handleOpenEdit = async (kpi: KPI) => {
     setEditingId(kpi.id);
     setName(kpi.name);
     setDescription(kpi.description || '');
@@ -69,7 +84,22 @@ const KPIs: React.FC = () => {
     setTargetValue(kpi.targetValue.toString());
     setCurrentValue(kpi.currentValue.toString());
     setWeight(kpi.weight ? kpi.weight.toString() : '1');
+    setLevel(kpi.level || 'individual');
     setSelectedGoalIds(kpi.linkedGoalIds || []);
+    
+    if (user?.role === 'department_head') {
+        await fetchAvailableChildren();
+        // Find children that point to this parent
+        // Since we don't store children list on parent, we infer from global list or fetch specifically.
+        // For simplicity, we filter availableChildKPIs that have this ID as parent.
+        // Note: fetchAvailableChildren gets *all* employee KPIs.
+        // We need to wait for state update or pass result.
+        const children = await db.getDepartmentEmployeeKPIs();
+        setAvailableChildKPIs(children);
+        const childIds = children.filter(c => c.parentKpiId === kpi.id).map(c => c.id);
+        setSelectedChildKpiIds(childIds);
+    }
+    
     setIsCreateOpen(true);
   };
 
@@ -88,7 +118,9 @@ const KPIs: React.FC = () => {
     setTargetValue('');
     setCurrentValue('0');
     setWeight('1');
+    setLevel('individual');
     setSelectedGoalIds([]);
+    setSelectedChildKpiIds([]);
     setIsSaving(false);
   };
 
@@ -103,7 +135,7 @@ const KPIs: React.FC = () => {
 
         const newKPI: KPI = {
             id: kpiId,
-            userId: user?.id || '',
+            userId: existing?.userId || user?.id || '', // Preserve owner if editing
             name,
             description,
             type,
@@ -111,20 +143,23 @@ const KPIs: React.FC = () => {
             currentValue: parseFloat(currentValue) || 0,
             weight: parseFloat(weight) || 1,
             linkedGoalIds: selectedGoalIds,
+            level: level,
             notes: existing?.notes,
             createdAt: existing?.createdAt || new Date().toISOString()
         };
 
         await db.saveKPI(newKPI);
+
+        // Link Children if Dept Head and Dept Level
+        if (user?.role === 'department_head' && level === 'department') {
+            await db.linkChildKPIs(kpiId, selectedChildKpiIds);
+        }
+
         await fetchData();
         setIsCreateOpen(false);
     } catch (error: any) {
         console.error("Failed to save KPI", error);
-        if (error.message?.includes('Could not find the table') || error.message?.includes('relation "public.kpis" does not exist')) {
-            alert("Configuration Error: The 'kpis' table is missing in your database.\n\nPlease copy the code from 'supabase_schema.sql' and run it in your Supabase SQL Editor.");
-        } else {
-            alert(`Failed to save KPI: ${error.message}`);
-        }
+        alert(`Failed to save KPI: ${error.message}`);
     } finally {
         setIsSaving(false);
     }
@@ -171,6 +206,14 @@ const KPIs: React.FC = () => {
           setSelectedGoalIds([...selectedGoalIds, goalId]);
       }
   };
+  
+  const toggleChildSelection = (childId: string) => {
+      if (selectedChildKpiIds.includes(childId)) {
+          setSelectedChildKpiIds(selectedChildKpiIds.filter(id => id !== childId));
+      } else {
+          setSelectedChildKpiIds([...selectedChildKpiIds, childId]);
+      }
+  };
 
   // Helper for display
   const formatValue = (val: number, type: string) => {
@@ -184,7 +227,15 @@ const KPIs: React.FC = () => {
       return Math.min(Math.round((current / target) * 100), 100);
   };
 
-  const sortedKPIs = [...kpis].sort((a, b) => {
+  const filteredKpis = kpis.filter(k => {
+      if (filterLevel === 'all') return true;
+      return k.level === filterLevel;
+  });
+
+  const sortedKPIs = [...filteredKpis].sort((a, b) => {
+      // Show Dept KPIs first if mixed
+      if (a.level !== b.level) return a.level === 'department' ? -1 : 1;
+
       const progA = getProgressPercent(a.currentValue, a.targetValue);
       const progB = getProgressPercent(b.currentValue, b.targetValue);
       
@@ -197,8 +248,12 @@ const KPIs: React.FC = () => {
     <div className="space-y-6 pb-20">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-            <h1 className="text-2xl font-bold text-gray-800">My KPIs</h1>
-            <p className="text-gray-500">Track your key performance metrics.</p>
+            <h1 className="text-2xl font-bold text-gray-800">KPIs</h1>
+            <p className="text-gray-500">
+                {user?.role === 'department_head' 
+                    ? `Managing ${user.department || 'Team'} performance.` 
+                    : "Track your key performance metrics."}
+            </p>
         </div>
         <button 
             onClick={handleOpenCreate}
@@ -208,13 +263,36 @@ const KPIs: React.FC = () => {
         </button>
       </div>
 
-      <div className="flex justify-end mb-4">
-          <div className="flex items-center gap-2 text-sm text-gray-600">
-              <Filter size={16} />
+      <div className="flex flex-wrap gap-3 justify-end mb-4 items-center">
+          {user?.role === 'department_head' && (
+              <div className="flex bg-gray-100 p-1 rounded-lg">
+                  <button 
+                    onClick={() => setFilterLevel('all')} 
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${filterLevel === 'all' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                      All
+                  </button>
+                  <button 
+                    onClick={() => setFilterLevel('department')} 
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${filterLevel === 'department' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                      Department
+                  </button>
+                  <button 
+                    onClick={() => setFilterLevel('individual')} 
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${filterLevel === 'individual' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                      Individual
+                  </button>
+              </div>
+          )}
+
+          <div className="flex items-center gap-2 text-sm text-gray-600 bg-white border px-3 py-1.5 rounded-lg">
+              <Filter size={14} />
               <select 
                 value={sortOption}
                 onChange={(e) => setSortOption(e.target.value as any)}
-                className="bg-transparent border-none outline-none font-medium cursor-pointer"
+                className="bg-transparent border-none outline-none font-medium cursor-pointer text-xs"
               >
                   <option value="name">Sort by Name</option>
                   <option value="progress_desc">Highest Progress</option>
@@ -230,37 +308,60 @@ const KPIs: React.FC = () => {
             if (percent < 30) colorClass = 'bg-red-500';
             else if (percent < 70) colorClass = 'bg-yellow-500';
             else colorClass = 'bg-green-500';
+            
+            const isDept = kpi.level === 'department';
 
             return (
-                <div key={kpi.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-full hover:shadow-md transition-shadow relative group">
-                     {/* Action Buttons */}
-                     <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                         <button 
-                            onClick={(e) => { e.stopPropagation(); handleOpenEdit(kpi); }}
-                            className="p-1.5 text-gray-300 hover:text-primary hover:bg-blue-50 rounded transition-colors"
-                            title="Edit"
-                        >
-                            <Pencil size={16} />
-                        </button>
-                         <button 
-                            onClick={(e) => handleDelete(kpi.id, e)} 
-                            className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                            title="Delete"
-                        >
-                            <Trash2 size={16} />
-                        </button>
-                    </div>
+                <div key={kpi.id} className={`bg-white rounded-xl shadow-sm border p-6 flex flex-col h-full hover:shadow-md transition-shadow relative group ${isDept ? 'border-purple-200 ring-1 ring-purple-50' : 'border-gray-200'}`}>
+                     {/* Action Buttons - Only allow Edit/Delete if owner or Dept Head */}
+                     {(user?.id === kpi.userId || user?.role === 'department_head') && (
+                        <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); handleOpenEdit(kpi); }}
+                                className="p-1.5 text-gray-300 hover:text-primary hover:bg-blue-50 rounded transition-colors"
+                                title="Edit"
+                            >
+                                <Pencil size={16} />
+                            </button>
+                            <button 
+                                onClick={(e) => handleDelete(kpi.id, e)} 
+                                className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                                title="Delete"
+                            >
+                                <Trash2 size={16} />
+                            </button>
+                        </div>
+                     )}
 
-                    <div onClick={() => handleOpenEdit(kpi)} className="cursor-pointer flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                             <span className="text-xs uppercase font-bold tracking-wide text-gray-400 bg-gray-50 px-2 py-0.5 rounded border border-gray-100">{kpi.type}</span>
+                    <div onClick={() => (user?.id === kpi.userId || user?.role === 'department_head') && handleOpenEdit(kpi)} className="cursor-pointer flex-1">
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                             {isDept ? (
+                                 <span className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded border border-purple-100 flex items-center gap-1 uppercase tracking-wider">
+                                     <Building2 size={10} /> Department
+                                 </span>
+                             ) : (
+                                <span className="text-[10px] font-bold text-gray-500 bg-gray-50 px-2 py-0.5 rounded border border-gray-100 uppercase tracking-wider">
+                                     Individual
+                                </span>
+                             )}
+                             <span className="text-[10px] font-bold text-gray-400 border border-gray-100 px-2 py-0.5 rounded bg-gray-50">{kpi.type}</span>
                              {kpi.weight !== 1 && (
                                  <span className="text-[10px] text-gray-500 flex items-center gap-1 bg-gray-50 px-2 py-0.5 rounded border border-gray-100" title="Weight">
                                      <Scale size={10} /> {kpi.weight}x
                                  </span>
                              )}
                         </div>
-                        <h3 className="text-lg font-bold text-gray-800 mb-1">{kpi.name}</h3>
+
+                        <h3 className="text-lg font-bold text-gray-800 mb-0.5">{kpi.name}</h3>
+                        
+                        {/* Owner Badge for Team View */}
+                        {user?.role === 'department_head' && kpi.userId !== user.id && (
+                             <div className="flex items-center gap-1 text-xs text-gray-500 mb-2">
+                                <Users size={12} /> 
+                                <span>{kpi.ownerName || 'Team Member'}</span>
+                             </div>
+                        )}
+
                         {kpi.description && <p className="text-sm text-gray-500 mb-4 line-clamp-2">{kpi.description}</p>}
                         
                         <div className="flex items-end justify-between mb-2">
@@ -275,7 +376,7 @@ const KPIs: React.FC = () => {
 
                         {kpi.linkedGoalIds && kpi.linkedGoalIds.length > 0 && (
                             <div className="mt-4 pt-3 border-t border-gray-100">
-                                <p className="text-xs text-gray-400 mb-2">Linked Goals:</p>
+                                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide font-bold">Linked Goals</p>
                                 <div className="flex flex-wrap gap-1">
                                     {kpi.linkedGoalIds.map(gid => {
                                         const g = goals.find(goal => goal.id === gid);
@@ -289,10 +390,11 @@ const KPIs: React.FC = () => {
                             </div>
                         )}
                         
-                        {kpi.notes && (
-                            <div className="mt-3 text-xs text-gray-500 italic bg-gray-50 p-2 rounded">
-                                " {kpi.notes} "
-                            </div>
+                        {/* Parent Link Indicator */}
+                        {kpi.parentKpiId && (
+                             <div className="mt-2 text-xs text-purple-600 flex items-center gap-1">
+                                 <LinkIcon size={12} /> Linked to Department KPI
+                             </div>
                         )}
                     </div>
 
@@ -310,8 +412,8 @@ const KPIs: React.FC = () => {
         {sortedKPIs.length === 0 && !isLoading && (
             <div className="col-span-full text-center py-12 bg-white rounded-xl border border-dashed border-gray-300">
                 <TrendingUp size={48} className="mx-auto text-gray-300 mb-4" />
-                <h3 className="text-lg font-medium text-gray-900">No KPIs tracked yet</h3>
-                <p className="text-gray-500">Create your first KPI to start measuring success.</p>
+                <h3 className="text-lg font-medium text-gray-900">No KPIs found</h3>
+                <p className="text-gray-500">Adjust filters or create a new KPI.</p>
             </div>
         )}
       </div>
@@ -332,6 +434,36 @@ const KPIs: React.FC = () => {
                               <input required type="text" value={name} onChange={e => setName(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none" placeholder="e.g. Monthly Sales" disabled={isSaving} />
                           </div>
                           
+                          {user?.role === 'department_head' && (
+                              <div className="bg-purple-50 p-3 rounded-lg border border-purple-100">
+                                  <label className="block text-sm font-bold text-purple-900 mb-2">KPI Level</label>
+                                  <div className="flex gap-4">
+                                      <label className="flex items-center gap-2 cursor-pointer">
+                                          <input 
+                                            type="radio" 
+                                            name="level" 
+                                            value="individual" 
+                                            checked={level === 'individual'} 
+                                            onChange={() => setLevel('individual')}
+                                            className="text-purple-600 focus:ring-purple-500"
+                                          />
+                                          <span className="text-sm text-gray-700">Individual (My KPI)</span>
+                                      </label>
+                                      <label className="flex items-center gap-2 cursor-pointer">
+                                          <input 
+                                            type="radio" 
+                                            name="level" 
+                                            value="department" 
+                                            checked={level === 'department'} 
+                                            onChange={() => setLevel('department')}
+                                            className="text-purple-600 focus:ring-purple-500"
+                                          />
+                                          <span className="text-sm text-gray-700 font-semibold">Department KPI</span>
+                                      </label>
+                                  </div>
+                              </div>
+                          )}
+
                           <div className="grid grid-cols-2 gap-4">
                               <div>
                                   <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
@@ -360,7 +492,6 @@ const KPIs: React.FC = () => {
                                     placeholder="1.0" 
                                     disabled={isSaving} 
                                   />
-                                  <p className="text-[10px] text-gray-400 mt-1">Default is 1. Higher value = higher priority.</p>
                               </div>
                           </div>
 
@@ -369,9 +500,10 @@ const KPIs: React.FC = () => {
                               <textarea rows={2} value={description} onChange={e => setDescription(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none resize-none" placeholder="What does this measure?" disabled={isSaving} />
                           </div>
 
+                          {/* Goal Linking */}
                           <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-2">Link Goals</label>
-                              <div className="border rounded-lg p-2 max-h-40 overflow-y-auto space-y-1 bg-gray-50">
+                              <label className="block text-sm font-medium text-gray-700 mb-2">Link Goals (Personal)</label>
+                              <div className="border rounded-lg p-2 max-h-32 overflow-y-auto space-y-1 bg-gray-50">
                                   {goals.map(g => (
                                       <div key={g.id} onClick={() => !isSaving && toggleGoalSelection(g.id)} className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm ${selectedGoalIds.includes(g.id) ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-200 text-gray-700'} ${isSaving ? 'pointer-events-none opacity-50' : ''}`}>
                                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedGoalIds.includes(g.id) ? 'bg-primary border-primary' : 'bg-white border-gray-300'}`}>
@@ -380,9 +512,35 @@ const KPIs: React.FC = () => {
                                           <span className="truncate">{g.title}</span>
                                       </div>
                                   ))}
-                                  {goals.length === 0 && <p className="text-xs text-gray-400 text-center py-2">No goals available to link.</p>}
+                                  {goals.length === 0 && <p className="text-xs text-gray-400 text-center py-2">No personal goals available.</p>}
                               </div>
                           </div>
+                          
+                          {/* Child KPI Linking (Dept Head Only) */}
+                          {user?.role === 'department_head' && level === 'department' && (
+                              <div className="mt-4 border-t pt-4">
+                                  <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                                      <LinkIcon size={16} className="text-purple-600" /> Link Employee KPIs
+                                  </label>
+                                  <div className="border rounded-lg p-2 max-h-40 overflow-y-auto space-y-1 bg-purple-50 border-purple-100">
+                                      {availableChildKPIs.length > 0 ? availableChildKPIs.map(child => (
+                                          <div key={child.id} onClick={() => !isSaving && toggleChildSelection(child.id)} className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm ${selectedChildKpiIds.includes(child.id) ? 'bg-purple-200 text-purple-900 font-medium' : 'hover:bg-purple-100 text-gray-700'} ${isSaving ? 'pointer-events-none opacity-50' : ''}`}>
+                                              <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedChildKpiIds.includes(child.id) ? 'bg-purple-600 border-purple-600' : 'bg-white border-gray-300'}`}>
+                                                  {selectedChildKpiIds.includes(child.id) && <ArrowRight size={10} className="text-white" />}
+                                              </div>
+                                              <div className="flex-1 truncate">
+                                                  <span className="font-semibold text-xs text-gray-500 mr-2">[{child.ownerName}]</span>
+                                                  {child.name}
+                                              </div>
+                                          </div>
+                                      )) : (
+                                          <p className="text-xs text-gray-400 text-center py-2">No employee KPIs found in your department.</p>
+                                      )}
+                                  </div>
+                                  <p className="text-[10px] text-gray-500 mt-1">Selected KPIs will be linked to this Department KPI.</p>
+                              </div>
+                          )}
+
                       </form>
                   </div>
 
