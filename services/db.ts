@@ -88,11 +88,20 @@ class DBService {
     if (updates.department !== undefined) profileUpdates.department = updates.department;
 
     if (Object.keys(profileUpdates).length > 0) {
-      const { error } = await supabase
+      // Use Upsert to ensure row exists
+      const { data, error } = await supabase
         .from('profiles')
-        .update(profileUpdates)
-        .eq('id', user.id);
+        .upsert({ 
+            id: user.id, 
+            updated_at: new Date().toISOString(),
+            ...profileUpdates 
+        })
+        .select();
+
       if (error) throw error;
+      if (!data || data.length === 0) {
+          console.warn("Update returned no data. Check RLS policies.");
+      }
     }
 
     return (await this.getCurrentUser()) as User;
