@@ -29,9 +29,12 @@ const KPIs: React.FC = () => {
   const [level, setLevel] = useState<'individual' | 'department'>('individual');
   const [selectedGoalIds, setSelectedGoalIds] = useState<string[]>([]);
   
-  // Linking Children State (For Dept Heads)
-  const [availableChildKPIs, setAvailableChildKPIs] = useState<KPI[]>([]);
-  const [selectedChildKpiIds, setSelectedChildKpiIds] = useState<string[]>([]);
+  // Linking State
+  const [availableChildKPIs, setAvailableChildKPIs] = useState<KPI[]>([]); // For Dept Head
+  const [selectedChildKpiIds, setSelectedChildKpiIds] = useState<string[]>([]); // For Dept Head
+  
+  const [departmentKPIs, setDepartmentKPIs] = useState<KPI[]>([]); // For Employees (to select Parent)
+  const [parentKpiId, setParentKpiId] = useState<string>(''); // For Employees
 
   // Update Progress State
   const [progressUpdateId, setProgressUpdateId] = useState<string | null>(null);
@@ -58,11 +61,15 @@ const KPIs: React.FC = () => {
     }
   };
 
-  // When opening Create Modal as Dept Head, fetch potential children
-  const fetchAvailableChildren = async () => {
+  const fetchLinkingData = async () => {
       if (user?.role === 'department_head') {
+          // Dept Heads can link children
           const children = await db.getDepartmentEmployeeKPIs();
           setAvailableChildKPIs(children);
+      } else {
+          // Employees can link to a parent (Dept KPI)
+          const parents = await db.getDepartmentKPIs();
+          setDepartmentKPIs(parents);
       }
   };
 
@@ -70,9 +77,9 @@ const KPIs: React.FC = () => {
     return (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
   };
 
-  const handleOpenCreate = () => {
+  const handleOpenCreate = async () => {
     resetForm();
-    if (user?.role === 'department_head') fetchAvailableChildren();
+    await fetchLinkingData();
     setIsCreateOpen(true);
   };
 
@@ -86,16 +93,15 @@ const KPIs: React.FC = () => {
     setWeight(kpi.weight ? kpi.weight.toString() : '1');
     setLevel(kpi.level || 'individual');
     setSelectedGoalIds(kpi.linkedGoalIds || []);
+    setParentKpiId(kpi.parentKpiId || '');
+    
+    await fetchLinkingData();
     
     if (user?.role === 'department_head') {
-        await fetchAvailableChildren();
-        // Find children that point to this parent
-        // Since we don't store children list on parent, we infer from global list or fetch specifically.
-        // For simplicity, we filter availableChildKPIs that have this ID as parent.
-        // Note: fetchAvailableChildren gets *all* employee KPIs.
-        // We need to wait for state update or pass result.
+        // Pre-select children
         const children = await db.getDepartmentEmployeeKPIs();
         setAvailableChildKPIs(children);
+        // Children that have THIS KPI as parent
         const childIds = children.filter(c => c.parentKpiId === kpi.id).map(c => c.id);
         setSelectedChildKpiIds(childIds);
     }
@@ -121,6 +127,7 @@ const KPIs: React.FC = () => {
     setLevel('individual');
     setSelectedGoalIds([]);
     setSelectedChildKpiIds([]);
+    setParentKpiId('');
     setIsSaving(false);
   };
 
@@ -135,7 +142,7 @@ const KPIs: React.FC = () => {
 
         const newKPI: KPI = {
             id: kpiId,
-            userId: existing?.userId || user?.id || '', // Preserve owner if editing
+            userId: existing?.userId || user?.id || '', 
             name,
             description,
             type,
@@ -145,12 +152,13 @@ const KPIs: React.FC = () => {
             linkedGoalIds: selectedGoalIds,
             level: level,
             notes: existing?.notes,
+            parentKpiId: parentKpiId || undefined, // Set by Employee
             createdAt: existing?.createdAt || new Date().toISOString()
         };
 
         await db.saveKPI(newKPI);
 
-        // Link Children if Dept Head and Dept Level
+        // Link Children (Dept Head sets children for this parent)
         if (user?.role === 'department_head' && level === 'department') {
             await db.linkChildKPIs(kpiId, selectedChildKpiIds);
         }
@@ -310,6 +318,7 @@ const KPIs: React.FC = () => {
             else colorClass = 'bg-green-500';
             
             const isDept = kpi.level === 'department';
+            const linkedParent = kpis.find(p => p.id === kpi.parentKpiId);
 
             return (
                 <div key={kpi.id} className={`bg-white rounded-xl shadow-sm border p-6 flex flex-col h-full hover:shadow-md transition-shadow relative group ${isDept ? 'border-purple-200 ring-1 ring-purple-50' : 'border-gray-200'}`}>
@@ -391,9 +400,9 @@ const KPIs: React.FC = () => {
                         )}
                         
                         {/* Parent Link Indicator */}
-                        {kpi.parentKpiId && (
-                             <div className="mt-2 text-xs text-purple-600 flex items-center gap-1">
-                                 <LinkIcon size={12} /> Linked to Department KPI
+                        {linkedParent && (
+                             <div className="mt-2 text-xs text-purple-600 flex items-center gap-1 bg-purple-50 w-fit px-2 py-1 rounded">
+                                 <LinkIcon size={12} /> Linked to: <span className="font-semibold">{linkedParent.name}</span>
                              </div>
                         )}
                     </div>
@@ -434,6 +443,7 @@ const KPIs: React.FC = () => {
                               <input required type="text" value={name} onChange={e => setName(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none" placeholder="e.g. Monthly Sales" disabled={isSaving} />
                           </div>
                           
+                          {/* Role Specific Settings */}
                           {user?.role === 'department_head' && (
                               <div className="bg-purple-50 p-3 rounded-lg border border-purple-100">
                                   <label className="block text-sm font-bold text-purple-900 mb-2">KPI Level</label>
@@ -462,6 +472,28 @@ const KPIs: React.FC = () => {
                                       </label>
                                   </div>
                               </div>
+                          )}
+
+                          {/* Employee Linking Section */}
+                          {user?.role !== 'department_head' && (
+                               <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Link to Department Objective</label>
+                                  <div className="relative">
+                                      <LinkIcon className="absolute left-3 top-2.5 text-gray-400" size={16} />
+                                      <select 
+                                        value={parentKpiId} 
+                                        onChange={e => setParentKpiId(e.target.value)}
+                                        className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-100 focus:border-primary outline-none bg-white"
+                                        disabled={isSaving}
+                                      >
+                                          <option value="">-- Select Parent KPI --</option>
+                                          {departmentKPIs.map(dp => (
+                                              <option key={dp.id} value={dp.id}>{dp.name} ({dp.ownerName})</option>
+                                          ))}
+                                      </select>
+                                  </div>
+                                  <p className="text-xs text-gray-500 mt-1">Connect your work to the bigger picture.</p>
+                               </div>
                           )}
 
                           <div className="grid grid-cols-2 gap-4">

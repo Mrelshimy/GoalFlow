@@ -35,7 +35,6 @@ class DBService {
     }
     
     // 2. Fallback to Auth Metadata (Secondary Source)
-    // This ensures that if the DB row is missing or RLS blocks it, we still get the role/dept from the session
     return {
       id: session.user.id,
       name: session.user.user_metadata.full_name || 'User',
@@ -66,7 +65,6 @@ class DBService {
     if (error) throw error;
     if (!data.user) throw new Error("Signup failed");
     
-    // Wait a moment for trigger to create profile
     await new Promise(r => setTimeout(r, 1000));
     return (await this.getCurrentUser()) as User;
   }
@@ -79,7 +77,6 @@ class DBService {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("No session");
 
-    // Prepare Updates for both Auth Metadata and Profile Table
     const profileUpdates: any = {};
     const metadataUpdates: any = {};
 
@@ -89,8 +86,6 @@ class DBService {
     }
     if (updates.title !== undefined) profileUpdates.job_title = updates.title;
     if (updates.avatar !== undefined) profileUpdates.avatar_url = updates.avatar;
-    
-    // Critical: Update Role/Dept in both places
     if (updates.role !== undefined) {
         profileUpdates.role = updates.role;
         metadataUpdates.role = updates.role;
@@ -100,16 +95,7 @@ class DBService {
         metadataUpdates.department = updates.department;
     }
 
-    // 1. Update Auth Metadata (Redundancy)
-    if (Object.keys(metadataUpdates).length > 0 || updates.password) {
-        const authPayload: any = { data: metadataUpdates };
-        if (updates.password) authPayload.password = updates.password;
-        
-        const { error } = await supabase.auth.updateUser(authPayload);
-        if (error) throw error;
-    }
-
-    // 2. Update Profile Table (Primary)
+    // 1. Update Profile Table (Primary) - Do this FIRST
     if (Object.keys(profileUpdates).length > 0) {
       const { error } = await supabase
         .from('profiles')
@@ -120,11 +106,29 @@ class DBService {
         });
 
       if (error) {
-          console.error("Profile DB update failed (using metadata fallback):", error.message);
+          console.error("Profile DB update failed:", error);
+          throw new Error("Failed to save to database. Please check connection.");
       }
     }
 
-    return (await this.getCurrentUser()) as User;
+    // 2. Update Auth Metadata (Best Effort - Don't block if this fails)
+    if (Object.keys(metadataUpdates).length > 0 || updates.password) {
+        const authPayload: any = { data: metadataUpdates };
+        if (updates.password) authPayload.password = updates.password;
+        
+        // We do NOT await this strictly or throw error, to prevent UI hanging if Auth service is strict
+        supabase.auth.updateUser(authPayload).then(({ error }) => {
+            if (error) console.warn("Metadata update warning:", error.message);
+        });
+    }
+
+    // 3. Return constructed user immediately to update UI state
+    // This avoids race conditions with getCurrentUser reading stale data
+    const currentUser = await this.getCurrentUser();
+    return {
+        ...currentUser!,
+        ...updates
+    };
   }
 
   // --- Team / Department Management ---
@@ -134,7 +138,7 @@ class DBService {
       .from('profiles')
       .select('*')
       .eq('department', department)
-      .eq('role', 'employee'); // Only fetch employees, not other heads
+      .eq('role', 'employee'); 
     
     if (error) { console.error(error); return []; }
     return data.map(mapProfileToUser);
@@ -154,7 +158,6 @@ class DBService {
     const { data, error } = await supabase.from('goals').select('*');
     if (error) { console.error(error); return []; }
     
-    // Map snake_case DB to camelCase Types
     return data.map((g: any) => ({
         ...g,
         userId: g.user_id,
@@ -167,8 +170,6 @@ class DBService {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("No user");
 
-    // Recalculate progress using DB count of tasks
-    // 1. Get linked tasks
     const { data: linkedTasks } = await supabase
         .from('tasks')
         .select('*')
@@ -195,7 +196,6 @@ class DBService {
         computedProgress = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : goal.progress;
     }
 
-    // Prepare for DB
     const dbGoal = {
         id: goal.id,
         user_id: user.id,
@@ -219,7 +219,6 @@ class DBService {
 
   async deleteGoal(id: string) {
     await supabase.from('goals').delete().eq('id', id);
-    // Linked tasks are set to null by ON DELETE SET NULL in SQL schema
   }
 
   // --- Task Lists ---
@@ -243,10 +242,8 @@ class DBService {
   }
 
   async deleteTaskList(id: string) {
-    // Check if default
     const { data } = await supabase.from('task_lists').select('is_default').eq('id', id).single();
     if (data?.is_default) return;
-
     await supabase.from('task_lists').delete().eq('id', id);
   }
 
@@ -269,7 +266,6 @@ class DBService {
   async saveTask(task: Task): Promise<Task> {
     const { data: { user } } = await supabase.auth.getUser();
     
-    // Check previous state for goal update
     const { data: existing } = await supabase.from('tasks').select('linked_goal_id').eq('id', task.id).single();
 
     const dbTask = {
@@ -288,7 +284,6 @@ class DBService {
     const { error } = await supabase.from('tasks').upsert(dbTask);
     if (error) throw error;
 
-    // Trigger goal progress updates
     if (task.linkedGoalId) {
         const goal = await this.getGoalById(task.linkedGoalId);
         if (goal) await this.saveGoal(goal);
@@ -302,9 +297,7 @@ class DBService {
   }
 
   async deleteTask(id: string) {
-    // Get task before delete to find linked goal
     const { data: task } = await supabase.from('tasks').select('linked_goal_id').eq('id', id).single();
-    
     await supabase.from('tasks').delete().eq('id', id);
 
     if (task?.linked_goal_id) {
@@ -316,7 +309,6 @@ class DBService {
   // --- KPIs ---
 
   async getKPIs(): Promise<KPI[]> {
-    // With new policy, this fetches OWN + TEAM KPIs
     const { data, error } = await supabase
         .from('kpis')
         .select(`
@@ -340,7 +332,6 @@ class DBService {
     }));
   }
 
-  // Specialized fetch for linking purposes (KPIs of employees in current user's department)
   async getDepartmentEmployeeKPIs(): Promise<KPI[]> {
     const user = await this.getCurrentUser();
     if (!user || !user.department) return [];
@@ -349,9 +340,36 @@ class DBService {
         .from('kpis')
         .select(`*, profiles!inner(*)`)
         .eq('profiles.department', user.department)
-        .neq('user_id', user.id); // Exclude self (Dept Head)
+        .neq('user_id', user.id); 
         
     if (error) { console.error(error); return []; }
+    
+    return data.map((k: any) => ({
+        ...k,
+        userId: k.user_id,
+        targetValue: k.target_value,
+        currentValue: k.current_value,
+        weight: k.weight || 1,
+        linkedGoalIds: k.linked_goal_ids || [],
+        level: k.level || 'individual',
+        parentKpiId: k.parent_kpi_id,
+        createdAt: k.created_at,
+        ownerName: k.profiles?.full_name
+    }));
+  }
+
+  async getDepartmentKPIs(): Promise<KPI[]> {
+    const user = await this.getCurrentUser();
+    if (!user || !user.department) return [];
+
+    // Get KPIs that are level 'department' belonging to users in same dept
+    const { data, error } = await supabase
+        .from('kpis')
+        .select(`*, profiles!inner(department, full_name)`)
+        .eq('level', 'department')
+        .eq('profiles.department', user.department);
+    
+    if (error) { console.error("Error fetching dept KPIs", error); return []; }
     
     return data.map((k: any) => ({
         ...k,
@@ -373,7 +391,7 @@ class DBService {
 
     const dbKPI: any = {
         id: kpi.id,
-        user_id: kpi.userId || user.id, // Preserve original owner if editing someone else's
+        user_id: kpi.userId || user.id, 
         name: kpi.name,
         description: kpi.description,
         type: kpi.type,
@@ -394,10 +412,7 @@ class DBService {
   }
 
   async linkChildKPIs(parentKpiId: string, childKpiIds: string[]) {
-      // 1. Clear old links for this parent (set parent_kpi_id to null where it was this parent)
       await supabase.from('kpis').update({ parent_kpi_id: null }).eq('parent_kpi_id', parentKpiId);
-      
-      // 2. Set new links
       if (childKpiIds.length > 0) {
           await supabase.from('kpis').update({ parent_kpi_id: parentKpiId }).in('id', childKpiIds);
       }
@@ -480,7 +495,6 @@ class DBService {
         history.push(date);
     }
 
-    // Recalculate streak logic (simplified reuse)
     const sortedHistory = [...history].sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
     let streak = 0;
     const today = new Date().toISOString().split('T')[0];
@@ -534,12 +548,10 @@ class DBService {
     };
   }
 
-  // Seed default data for new user
   async seed() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     
-    // Check if user has default list
     const { data: lists } = await supabase.from('task_lists').select('*').eq('user_id', user.id);
     if (!lists || lists.length === 0) {
         await supabase.from('task_lists').insert({
@@ -550,7 +562,6 @@ class DBService {
     }
   }
 
-  // Legacy/File Backup (Deprecating for Sync, but keeping interface)
   async exportBackup() { return null; }
   async importBackup() { return null; }
 }
