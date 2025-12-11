@@ -33,6 +33,7 @@ const Goals: React.FC = () => {
   // Convert Milestone to Task State
   const [convertModalData, setConvertModalData] = useState<{milestone: Milestone, goalId: string} | null>(null);
   const [selectedListId, setSelectedListId] = useState<string>('');
+  const [isConverting, setIsConverting] = useState(false);
 
   useEffect(() => {
     refreshGoals();
@@ -48,7 +49,7 @@ const Goals: React.FC = () => {
       setGoals(g);
       setTasks(t);
       setTaskLists(l);
-      if (l.length > 0) setSelectedListId(l[0].id);
+      if (l.length > 0 && !selectedListId) setSelectedListId(l[0].id);
       setLoading(false);
   };
 
@@ -211,25 +212,47 @@ const Goals: React.FC = () => {
   // --- Milestone to Task Logic ---
   const openConvertModal = (milestone: Milestone, goalId: string) => {
       setConvertModalData({ milestone, goalId });
+      // Fallback: If no list selected but lists exist, select the first one
+      if (!selectedListId && taskLists.length > 0) {
+          setSelectedListId(taskLists[0].id);
+      }
   };
 
   const handleConvertSubmit = async () => {
-      if (!convertModalData || !selectedListId) return;
+      // Robust selection of list ID
+      let targetListId = selectedListId;
+      if (!targetListId && taskLists.length > 0) {
+          targetListId = taskLists[0].id;
+      }
 
-      const newTask: Task = {
-          id: crypto.randomUUID(),
-          userId: user?.id || '',
-          listId: selectedListId,
-          linkedGoalId: convertModalData.goalId,
-          title: convertModalData.milestone.description,
-          dueDate: convertModalData.milestone.dueDate,
-          status: 'pending',
-          createdAt: new Date().toISOString()
-      };
+      if (!convertModalData || !targetListId) {
+          if (taskLists.length === 0) {
+              alert("No task lists found. Please create a list in the Tasks page first.");
+          }
+          return;
+      }
 
-      await db.saveTask(newTask);
-      setConvertModalData(null);
-      refreshGoals(); // Refresh to show the new linked task
+      setIsConverting(true);
+      try {
+        const newTask: Task = {
+            id: crypto.randomUUID(),
+            userId: user?.id || '',
+            listId: targetListId,
+            linkedGoalId: convertModalData.goalId,
+            title: convertModalData.milestone.description,
+            dueDate: convertModalData.milestone.dueDate,
+            status: 'pending',
+            createdAt: new Date().toISOString()
+        };
+
+        await db.saveTask(newTask);
+        setConvertModalData(null);
+        await refreshGoals(); // Refresh to show the new linked task
+      } catch (e) {
+        console.error("Failed to convert milestone to task", e);
+      } finally {
+        setIsConverting(false);
+      }
   };
 
   if (loading && goals.length === 0) return <div className="p-8 flex justify-center"><Loader2 className="animate-spin" /></div>;
@@ -429,7 +452,7 @@ const Goals: React.FC = () => {
               <div className="bg-white w-full max-w-sm rounded-xl shadow-xl p-6">
                   <div className="flex justify-between items-start mb-4">
                       <h3 className="text-lg font-bold text-gray-800">Add as Task</h3>
-                      <button onClick={() => setConvertModalData(null)}><X size={20} className="text-gray-400" /></button>
+                      {!isConverting && <button onClick={() => setConvertModalData(null)}><X size={20} className="text-gray-400" /></button>}
                   </div>
                   
                   <div className="mb-4">
@@ -445,17 +468,25 @@ const Goals: React.FC = () => {
                           value={selectedListId}
                           onChange={(e) => setSelectedListId(e.target.value)}
                           className="w-full border rounded-md p-2 bg-white"
+                          disabled={isConverting}
                       >
                           {taskLists.map(list => (
                               <option key={list.id} value={list.id}>{list.title}</option>
                           ))}
+                          {taskLists.length === 0 && <option value="">No lists available</option>}
                       </select>
+                      {taskLists.length === 0 && <p className="text-xs text-red-500 mt-1">Please create a list in Tasks first.</p>}
                   </div>
 
                   <div className="flex justify-end gap-2">
-                      <button onClick={() => setConvertModalData(null)} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
-                      <button onClick={handleConvertSubmit} className="px-4 py-2 bg-primary text-white text-sm rounded-lg hover:bg-blue-600 flex items-center gap-2">
-                          <ListPlus size={16} /> Add Task
+                      <button onClick={() => setConvertModalData(null)} disabled={isConverting} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg disabled:opacity-50">Cancel</button>
+                      <button 
+                        onClick={handleConvertSubmit} 
+                        disabled={isConverting || taskLists.length === 0} 
+                        className="px-4 py-2 bg-primary text-white text-sm rounded-lg hover:bg-blue-600 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                          {isConverting ? <Loader2 size={16} className="animate-spin" /> : <ListPlus size={16} />} 
+                          {isConverting ? 'Adding...' : 'Add Task'}
                       </button>
                   </div>
               </div>
@@ -582,7 +613,7 @@ const GoalCard: React.FC<{
                                 </div>
                                 <button 
                                     onClick={(e) => { e.stopPropagation(); onConvertMilestone(m); }}
-                                    className="text-gray-300 hover:text-primary hover:bg-blue-50 p-1.5 rounded transition-colors opacity-0 group-hover:opacity-100"
+                                    className="text-indigo-400 hover:text-indigo-600 bg-indigo-50 hover:bg-indigo-100 p-1.5 rounded transition-colors"
                                     title="Add as Task"
                                 >
                                     <ListPlus size={16} />
