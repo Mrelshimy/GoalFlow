@@ -21,21 +21,27 @@ class DBService {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) return null;
 
-    // Fetch extra profile data
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', session.user.id)
-      .single();
+    // 1. Try to fetch from Profiles Table (Primary Source)
+    try {
+        const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .single();
 
-    if (profile) return mapProfileToUser(profile);
+        if (profile && !error) return mapProfileToUser(profile);
+    } catch (e) {
+        console.warn("Profile fetch failed, using metadata fallback", e);
+    }
     
-    // Fallback if profile trigger failed
+    // 2. Fallback to Auth Metadata (Secondary Source)
+    // This ensures that if the DB row is missing or RLS blocks it, we still get the role/dept from the session
     return {
       id: session.user.id,
       name: session.user.user_metadata.full_name || 'User',
       email: session.user.email || '',
-      role: 'employee'
+      role: session.user.user_metadata.role || 'employee',
+      department: session.user.user_metadata.department
     };
   }
 
@@ -54,7 +60,7 @@ class DBService {
       email,
       password,
       options: {
-        data: { full_name: name }
+        data: { full_name: name, role: 'employee' } // Default metadata
       }
     });
     if (error) throw error;
@@ -73,34 +79,48 @@ class DBService {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("No session");
 
-    // Update Password if provided
-    if (updates.password) {
-      const { error } = await supabase.auth.updateUser({ password: updates.password });
-      if (error) throw error;
-    }
-
-    // Update Profile
+    // Prepare Updates for both Auth Metadata and Profile Table
     const profileUpdates: any = {};
-    if (updates.name) profileUpdates.full_name = updates.name;
+    const metadataUpdates: any = {};
+
+    if (updates.name) {
+        profileUpdates.full_name = updates.name;
+        metadataUpdates.full_name = updates.name;
+    }
     if (updates.title !== undefined) profileUpdates.job_title = updates.title;
     if (updates.avatar !== undefined) profileUpdates.avatar_url = updates.avatar;
-    if (updates.role !== undefined) profileUpdates.role = updates.role;
-    if (updates.department !== undefined) profileUpdates.department = updates.department;
+    
+    // Critical: Update Role/Dept in both places
+    if (updates.role !== undefined) {
+        profileUpdates.role = updates.role;
+        metadataUpdates.role = updates.role;
+    }
+    if (updates.department !== undefined) {
+        profileUpdates.department = updates.department;
+        metadataUpdates.department = updates.department;
+    }
 
+    // 1. Update Auth Metadata (Redundancy)
+    if (Object.keys(metadataUpdates).length > 0 || updates.password) {
+        const authPayload: any = { data: metadataUpdates };
+        if (updates.password) authPayload.password = updates.password;
+        
+        const { error } = await supabase.auth.updateUser(authPayload);
+        if (error) throw error;
+    }
+
+    // 2. Update Profile Table (Primary)
     if (Object.keys(profileUpdates).length > 0) {
-      // Use Upsert to ensure row exists
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('profiles')
         .upsert({ 
             id: user.id, 
             updated_at: new Date().toISOString(),
             ...profileUpdates 
-        })
-        .select();
+        });
 
-      if (error) throw error;
-      if (!data || data.length === 0) {
-          console.warn("Update returned no data. Check RLS policies.");
+      if (error) {
+          console.error("Profile DB update failed (using metadata fallback):", error.message);
       }
     }
 

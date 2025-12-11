@@ -1,5 +1,5 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../App';
 import { db } from '../services/db';
 import { UserRole } from '../types';
@@ -18,6 +18,18 @@ const Profile: React.FC = () => {
   const [avatar, setAvatar] = useState(user?.avatar || '');
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
+
+  // Sync state with user context if it changes
+  useEffect(() => {
+      if (user) {
+          setName(user.name);
+          setEmail(user.email);
+          setTitle(user.title || '');
+          setRole(user.role);
+          setDepartment(user.department || '');
+          setAvatar(user.avatar || '');
+      }
+  }, [user]);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -50,11 +62,11 @@ const Profile: React.FC = () => {
             password: newPassword || undefined
         });
         
-        refreshUser();
+        await refreshUser();
         setMessage({ type: 'success', text: 'Profile updated successfully!' });
         setNewPassword(''); 
-    } catch (error) {
-        setMessage({ type: 'error', text: 'Failed to update profile.' });
+    } catch (error: any) {
+        setMessage({ type: 'error', text: `Failed to update profile: ${error.message || error}` });
         console.error(error);
     } finally {
         setIsSaving(false);
