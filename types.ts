@@ -93,6 +93,7 @@ export interface KPI {
   type: 'numeric' | 'percentage' | 'currency';
   targetValue: number;
   currentValue: number;
+  weight: number;
   unit?: string;
   linkedGoalIds: string[];
   notes?: string;

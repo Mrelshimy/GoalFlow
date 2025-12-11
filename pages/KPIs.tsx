@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { db } from '../services/db';
 import { KPI, Goal } from '../types';
-import { Plus, X, Save, TrendingUp, Target, Activity, Filter, Trash2, ArrowRight, Loader2, AlertTriangle } from 'lucide-react';
+import { Plus, X, Save, TrendingUp, Target, Activity, Filter, Trash2, ArrowRight, Loader2, Pencil, Scale } from 'lucide-react';
 
 const KPIs: React.FC = () => {
   const { user } = useAuth();
@@ -24,6 +24,7 @@ const KPIs: React.FC = () => {
   const [type, setType] = useState<'numeric' | 'percentage' | 'currency'>('numeric');
   const [targetValue, setTargetValue] = useState<string>('');
   const [currentValue, setCurrentValue] = useState<string>('0');
+  const [weight, setWeight] = useState<string>('1');
   const [selectedGoalIds, setSelectedGoalIds] = useState<string[]>([]);
 
   // Update Progress State
@@ -67,6 +68,7 @@ const KPIs: React.FC = () => {
     setType(kpi.type);
     setTargetValue(kpi.targetValue.toString());
     setCurrentValue(kpi.currentValue.toString());
+    setWeight(kpi.weight ? kpi.weight.toString() : '1');
     setSelectedGoalIds(kpi.linkedGoalIds || []);
     setIsCreateOpen(true);
   };
@@ -85,6 +87,7 @@ const KPIs: React.FC = () => {
     setType('numeric');
     setTargetValue('');
     setCurrentValue('0');
+    setWeight('1');
     setSelectedGoalIds([]);
     setIsSaving(false);
   };
@@ -106,6 +109,7 @@ const KPIs: React.FC = () => {
             type,
             targetValue: parseFloat(targetValue),
             currentValue: parseFloat(currentValue) || 0,
+            weight: parseFloat(weight) || 1,
             linkedGoalIds: selectedGoalIds,
             notes: existing?.notes,
             createdAt: existing?.createdAt || new Date().toISOString()
@@ -229,16 +233,32 @@ const KPIs: React.FC = () => {
 
             return (
                 <div key={kpi.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-full hover:shadow-md transition-shadow relative group">
-                     <button 
-                        onClick={(e) => handleDelete(kpi.id, e)} 
-                        className="absolute top-4 right-4 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                        <Trash2 size={16} />
-                    </button>
+                     {/* Action Buttons */}
+                     <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                         <button 
+                            onClick={(e) => { e.stopPropagation(); handleOpenEdit(kpi); }}
+                            className="p-1.5 text-gray-300 hover:text-primary hover:bg-blue-50 rounded transition-colors"
+                            title="Edit"
+                        >
+                            <Pencil size={16} />
+                        </button>
+                         <button 
+                            onClick={(e) => handleDelete(kpi.id, e)} 
+                            className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                            title="Delete"
+                        >
+                            <Trash2 size={16} />
+                        </button>
+                    </div>
 
                     <div onClick={() => handleOpenEdit(kpi)} className="cursor-pointer flex-1">
                         <div className="flex items-center gap-2 mb-2">
                              <span className="text-xs uppercase font-bold tracking-wide text-gray-400 bg-gray-50 px-2 py-0.5 rounded border border-gray-100">{kpi.type}</span>
+                             {kpi.weight !== 1 && (
+                                 <span className="text-[10px] text-gray-500 flex items-center gap-1 bg-gray-50 px-2 py-0.5 rounded border border-gray-100" title="Weight">
+                                     <Scale size={10} /> {kpi.weight}x
+                                 </span>
+                             )}
                         </div>
                         <h3 className="text-lg font-bold text-gray-800 mb-1">{kpi.name}</h3>
                         {kpi.description && <p className="text-sm text-gray-500 mb-4 line-clamp-2">{kpi.description}</p>}
@@ -324,6 +344,23 @@ const KPIs: React.FC = () => {
                               <div>
                                   <label className="block text-sm font-medium text-gray-700 mb-1">Target Value</label>
                                   <input required type="number" step="any" value={targetValue} onChange={e => setTargetValue(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none" placeholder="100" disabled={isSaving} />
+                              </div>
+                          </div>
+
+                           <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Weight (Priority)</label>
+                                  <input 
+                                    type="number" 
+                                    step="0.1" 
+                                    min="0"
+                                    value={weight} 
+                                    onChange={e => setWeight(e.target.value)} 
+                                    className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none" 
+                                    placeholder="1.0" 
+                                    disabled={isSaving} 
+                                  />
+                                  <p className="text-[10px] text-gray-400 mt-1">Default is 1. Higher value = higher priority.</p>
                               </div>
                           </div>
 

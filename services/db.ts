@@ -269,6 +269,7 @@ class DBService {
         userId: k.user_id,
         targetValue: k.target_value,
         currentValue: k.current_value,
+        weight: k.weight || 1, // Fallback for existing records
         linkedGoalIds: k.linked_goal_ids || [],
         createdAt: k.created_at
     }));
@@ -286,6 +287,7 @@ class DBService {
         type: kpi.type,
         target_value: kpi.targetValue,
         current_value: kpi.currentValue,
+        weight: kpi.weight,
         unit: kpi.unit,
         notes: kpi.notes,
         created_at: kpi.createdAt
@@ -295,8 +297,6 @@ class DBService {
     if (kpi.linkedGoalIds && kpi.linkedGoalIds.length > 0) {
         dbKPI.linked_goal_ids = kpi.linkedGoalIds;
     } else {
-        // Send empty array to clear, but wrap in try/catch for "Column does not exist" safety?
-        // Standard behavior: send it.
         dbKPI.linked_goal_ids = [];
     }
 
@@ -353,7 +353,7 @@ class DBService {
         ...h,
         userId: h.user_id,
         streakCount: h.streak_count,
-        lastLoggedDate: h.last_logged_date
+        last_logged_date: h.last_logged_date
     }));
   }
 
