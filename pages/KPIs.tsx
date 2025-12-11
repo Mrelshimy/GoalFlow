@@ -36,14 +36,23 @@ const KPIs: React.FC = () => {
   }, []);
 
   const fetchData = async () => {
-    setIsLoading(true);
-    const [kpisData, goalsData] = await Promise.all([
-        db.getKPIs(),
-        db.getGoals()
-    ]);
-    setKpis(kpisData);
-    setGoals(goalsData);
-    setIsLoading(false);
+    try {
+        setIsLoading(true);
+        const [kpisData, goalsData] = await Promise.all([
+            db.getKPIs(),
+            db.getGoals()
+        ]);
+        setKpis(kpisData);
+        setGoals(goalsData);
+    } catch (e) {
+        console.error("Error fetching data", e);
+    } finally {
+        setIsLoading(false);
+    }
+  };
+
+  const generateId = () => {
+    return (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
   };
 
   const handleOpenCreate = () => {
@@ -86,7 +95,7 @@ const KPIs: React.FC = () => {
 
     setIsSaving(true);
     try {
-        const kpiId = editingId || crypto.randomUUID();
+        const kpiId = editingId || generateId();
         const existing = editingId ? kpis.find(k => k.id === editingId) : null;
 
         const newKPI: KPI = {
@@ -105,9 +114,9 @@ const KPIs: React.FC = () => {
         await db.saveKPI(newKPI);
         await fetchData();
         setIsCreateOpen(false);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Failed to save KPI", error);
-        alert("Failed to save KPI. Please try again.");
+        alert(`Failed to save KPI: ${error.message}`);
     } finally {
         setIsSaving(false);
     }
@@ -131,8 +140,9 @@ const KPIs: React.FC = () => {
         await db.saveKPI(updatedKPI);
         await fetchData();
         setIsUpdateOpen(false);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Failed to update KPI progress", error);
+        alert(`Failed to update progress: ${error.message}`);
     } finally {
         setIsSaving(false);
     }

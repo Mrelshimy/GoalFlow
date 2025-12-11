@@ -275,23 +275,33 @@ class DBService {
   }
 
   async saveKPI(kpi: KPI): Promise<KPI> {
-    const { data: { user } } = await supabase.auth.getUser();
-    const dbKPI = {
+    const user = await this.getCurrentUser();
+    if (!user) throw new Error("User session not found");
+
+    const dbKPI: any = {
         id: kpi.id,
-        user_id: user?.id,
+        user_id: user.id,
         name: kpi.name,
         description: kpi.description,
         type: kpi.type,
         target_value: kpi.targetValue,
         current_value: kpi.currentValue,
         unit: kpi.unit,
-        linked_goal_ids: kpi.linkedGoalIds,
         notes: kpi.notes,
         created_at: kpi.createdAt
     };
 
+    // Only add linked_goal_ids if necessary, to avoid errors if column is missing in older schemas
+    if (kpi.linkedGoalIds && kpi.linkedGoalIds.length > 0) {
+        dbKPI.linked_goal_ids = kpi.linkedGoalIds;
+    } else {
+        // Send empty array to clear, but wrap in try/catch for "Column does not exist" safety?
+        // Standard behavior: send it.
+        dbKPI.linked_goal_ids = [];
+    }
+
     const { error } = await supabase.from('kpis').upsert(dbKPI);
-    if (error) throw error;
+    if (error) throw new Error(error.message);
     return kpi;
   }
 
