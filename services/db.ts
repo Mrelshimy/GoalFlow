@@ -306,148 +306,163 @@ class DBService {
 
   // --- KPIs ---
 
+  private async getDepartmentUserIds(department: string): Promise<string[]> {
+    try {
+        const { data, error } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('department', department);
+        
+        if (error || !data) return [];
+        return data.map(u => u.id);
+    } catch (e) {
+        console.error("Error fetching dept user IDs", e);
+        return [];
+    }
+  }
+
   async getKPIs(): Promise<KPI[]> {
     const user = await this.getCurrentUser();
     if (!user) return [];
 
-    try {
-        // 1. Fetch My Own KPIs
-        // Fetch strictly by user_id. We won't use a join here to avoid errors if join syntax is wrong.
-        // We'll trust the user knows it's their own.
-        const { data: myKpisRaw, error: myError } = await supabase
-            .from('kpis')
-            .select('*')
-            .eq('user_id', user.id);
+    let allKpis: any[] = [];
+    const ownerNameMap = new Map<string, string>();
 
-        if (myError) {
-             console.error("Error fetching my KPIs", myError);
-             throw myError;
-        }
-        
-        const myKpis = myKpisRaw.map((k: any) => ({
-            ...k,
-            ownerName: user.name || 'Me'
-        }));
-
-        // 2. Fetch Department KPIs (if user belongs to a department)
-        let deptKpis: any[] = [];
-        
-        if (user.department) {
-             // We attempt to fetch using a join to filter by department
-             // Use generic 'profiles' which Supabase should match to the user_id FK
-             const { data: dKpisRaw, error: dError } = await supabase
-                .from('kpis')
-                .select(`*, profiles(full_name, department)`)
-                .eq('level', 'department');
-             
-             if (!dError && dKpisRaw) {
-                 deptKpis = dKpisRaw.filter((k: any) => {
-                     // 1. Must match user's department
-                     const matchesDept = k.profiles?.department === user.department;
-                     // 2. Exclude if it's actually my own KPI (already in myKpis)
-                     const isNotMine = k.user_id !== user.id;
-                     return matchesDept && isNotMine;
-                 }).map((k: any) => ({
-                     ...k,
-                     ownerName: k.profiles?.full_name || 'Department'
-                 }));
-             } else if (dError) {
-                 console.warn("Could not fetch department KPIs with join:", dError.message);
-                 // Fallback: If join fails, we cannot securely know department ownership without RLS or join.
-                 // We skip department KPIs to avoid showing wrong data.
-             }
-        }
-
-        // Combine unique list
-        const allKpis = [...myKpis, ...deptKpis];
-        
-        return allKpis.map((k: any) => ({
-            ...k,
-            userId: k.user_id,
-            targetValue: k.target_value,
-            currentValue: k.current_value,
-            weight: k.weight || 1, 
-            linkedGoalIds: k.linked_goal_ids || [],
-            level: k.level || 'individual',
-            parentKpiId: k.parent_kpi_id,
-            createdAt: k.created_at,
-            ownerName: k.ownerName
-        }));
-    } catch (e) {
-        console.error("Critical KPI fetch error", e);
-        // Fallback: return empty array rather than crashing
-        return [];
+    // 1. Fetch My KPIs (Always safe)
+    const { data: myKpis, error: myError } = await supabase
+        .from('kpis')
+        .select('*')
+        .eq('user_id', user.id);
+    
+    if (myKpis) {
+        allKpis = [...myKpis];
+        ownerNameMap.set(user.id, user.name);
     }
+
+    // 2. Fetch Department KPIs using ID list (Robust method)
+    if (user.department) {
+        const deptUserIds = await this.getDepartmentUserIds(user.department);
+        
+        if (deptUserIds.length > 0) {
+            const { data: deptKpis, error: dError } = await supabase
+                .from('kpis')
+                .select('*')
+                .eq('level', 'department')
+                .in('user_id', deptUserIds); // Fetch KPIs owned by ANYONE in my department
+            
+            if (deptKpis) {
+                // Add unique department KPIs (exclude mine if I already fetched them)
+                const newDeptKpis = deptKpis.filter(k => k.user_id !== user.id);
+                allKpis = [...allKpis, ...newDeptKpis];
+            }
+        }
+    }
+
+    // 3. Fetch Owner Names for all involved KPIs
+    const userIdsToFetch = [...new Set(allKpis.map(k => k.user_id))].filter(id => !ownerNameMap.has(id));
+    if (userIdsToFetch.length > 0) {
+        const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', userIdsToFetch);
+        profiles?.forEach(p => ownerNameMap.set(p.id, p.full_name));
+    }
+
+    // 4. Transform to app type
+    return allKpis.map((k: any) => ({
+        id: k.id,
+        userId: k.user_id,
+        name: k.name,
+        description: k.description,
+        type: k.type,
+        targetValue: k.target_value,
+        currentValue: k.current_value,
+        weight: k.weight || 1, 
+        unit: k.unit,
+        notes: k.notes,
+        linkedGoalIds: k.linked_goal_ids || [],
+        level: k.level || 'individual',
+        parentKpiId: k.parent_kpi_id,
+        createdAt: k.created_at,
+        ownerName: ownerNameMap.get(k.user_id) || 'Unknown'
+    }));
   }
 
   async getDepartmentEmployeeKPIs(): Promise<KPI[]> {
     const user = await this.getCurrentUser();
     if (!user || !user.department) return [];
 
-    try {
-        // Attempt fetch with standard join
-        const { data, error } = await supabase
-            .from('kpis')
-            .select(`*, profiles(full_name, department)`)
-            .neq('user_id', user.id); 
-            
-        if (error) throw error;
+    // Strategy: Get IDs of everyone in department -> Fetch KPIs
+    const deptUserIds = await this.getDepartmentUserIds(user.department);
+    const employeeIds = deptUserIds.filter(id => id !== user.id); // Exclude me
+
+    if (employeeIds.length === 0) return [];
+
+    const { data, error } = await supabase
+        .from('kpis')
+        .select('*')
+        .in('user_id', employeeIds);
         
-        // Filter in memory for safety
-        const filtered = data.filter((k: any) => k.profiles?.department === user.department);
-        
-        return filtered.map((k: any) => ({
-            ...k,
-            userId: k.user_id,
-            targetValue: k.target_value,
-            currentValue: k.current_value,
-            weight: k.weight || 1,
-            linkedGoalIds: k.linked_goal_ids || [],
-            level: k.level || 'individual',
-            parentKpiId: k.parent_kpi_id,
-            createdAt: k.created_at,
-            ownerName: k.profiles?.full_name
-        }));
-    } catch (e) {
-        console.error("Error fetching dept employee KPIs", e);
-        return [];
-    }
+    if (error || !data) return [];
+
+    // Fetch names
+    const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', employeeIds);
+    const nameMap = new Map(profiles?.map(p => [p.id, p.full_name]));
+
+    return data.map((k: any) => ({
+        id: k.id,
+        userId: k.user_id,
+        name: k.name,
+        description: k.description,
+        type: k.type,
+        targetValue: k.target_value,
+        currentValue: k.current_value,
+        weight: k.weight || 1, 
+        unit: k.unit,
+        notes: k.notes,
+        linkedGoalIds: k.linked_goal_ids || [],
+        level: k.level || 'individual',
+        parentKpiId: k.parent_kpi_id,
+        createdAt: k.created_at,
+        ownerName: nameMap.get(k.user_id) || 'Team Member'
+    }));
   }
 
   async getDepartmentKPIs(): Promise<KPI[]> {
     const user = await this.getCurrentUser();
     if (!user || !user.department) return [];
 
-    try {
-        // Fetch all department-level KPIs, then filter
-        const { data, error } = await supabase
-            .from('kpis')
-            .select(`*, profiles(full_name, department)`)
-            .eq('level', 'department');
-        
-        if (error) throw error;
-        
-        // Robust Filtering
-        const filtered = data.filter((k: any) => 
-            k.profiles && k.profiles.department === user.department
-        );
-        
-        return filtered.map((k: any) => ({
-            ...k,
-            userId: k.user_id,
-            targetValue: k.target_value,
-            currentValue: k.current_value,
-            weight: k.weight || 1,
-            linkedGoalIds: k.linked_goal_ids || [],
-            level: k.level || 'individual',
-            parentKpiId: k.parent_kpi_id,
-            createdAt: k.created_at,
-            ownerName: k.profiles?.full_name || 'Department'
-        }));
-    } catch (e) {
-        console.error("Error fetching dept KPIs", e);
-        return [];
-    }
+    const deptUserIds = await this.getDepartmentUserIds(user.department);
+    
+    if (deptUserIds.length === 0) return [];
+
+    const { data, error } = await supabase
+        .from('kpis')
+        .select('*')
+        .eq('level', 'department')
+        .in('user_id', deptUserIds);
+    
+    if (error || !data) return [];
+
+    // Fetch names
+    const userIds = [...new Set(data.map((k: any) => k.user_id))];
+    const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', userIds);
+    const nameMap = new Map(profiles?.map(p => [p.id, p.full_name]));
+    
+    return data.map((k: any) => ({
+        id: k.id,
+        userId: k.user_id,
+        name: k.name,
+        description: k.description,
+        type: k.type,
+        targetValue: k.target_value,
+        currentValue: k.current_value,
+        weight: k.weight || 1,
+        unit: k.unit,
+        notes: k.notes,
+        linkedGoalIds: k.linked_goal_ids || [],
+        level: k.level || 'individual',
+        parentKpiId: k.parent_kpi_id,
+        createdAt: k.created_at,
+        ownerName: nameMap.get(k.user_id) || 'Department'
+    }));
   }
 
   async saveKPI(kpi: KPI): Promise<KPI> {
