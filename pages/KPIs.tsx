@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { db } from '../services/db';
 import { KPI, Goal } from '../types';
-import { Plus, X, Save, TrendingUp, Target, Activity, Filter, Trash2, ArrowRight } from 'lucide-react';
+import { Plus, X, Save, TrendingUp, Target, Activity, Filter, Trash2, ArrowRight, Loader2 } from 'lucide-react';
 
 const KPIs: React.FC = () => {
   const { user } = useAuth();
@@ -15,6 +15,7 @@ const KPIs: React.FC = () => {
   // Modal States
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isUpdateOpen, setIsUpdateOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   
   // Create/Edit Form State
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -22,7 +23,7 @@ const KPIs: React.FC = () => {
   const [description, setDescription] = useState('');
   const [type, setType] = useState<'numeric' | 'percentage' | 'currency'>('numeric');
   const [targetValue, setTargetValue] = useState<string>('');
-  const [currentValue, setCurrentValue] = useState<string>('');
+  const [currentValue, setCurrentValue] = useState<string>('0');
   const [selectedGoalIds, setSelectedGoalIds] = useState<string[]>([]);
 
   // Update Progress State
@@ -76,49 +77,65 @@ const KPIs: React.FC = () => {
     setTargetValue('');
     setCurrentValue('0');
     setSelectedGoalIds([]);
+    setIsSaving(false);
   };
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !targetValue) return;
 
-    const kpiId = editingId || crypto.randomUUID();
-    const existing = editingId ? kpis.find(k => k.id === editingId) : null;
+    setIsSaving(true);
+    try {
+        const kpiId = editingId || crypto.randomUUID();
+        const existing = editingId ? kpis.find(k => k.id === editingId) : null;
 
-    const newKPI: KPI = {
-        id: kpiId,
-        userId: user?.id || '',
-        name,
-        description,
-        type,
-        targetValue: parseFloat(targetValue),
-        currentValue: parseFloat(currentValue),
-        linkedGoalIds: selectedGoalIds,
-        notes: existing?.notes,
-        createdAt: existing?.createdAt || new Date().toISOString()
-    };
+        const newKPI: KPI = {
+            id: kpiId,
+            userId: user?.id || '',
+            name,
+            description,
+            type,
+            targetValue: parseFloat(targetValue),
+            currentValue: parseFloat(currentValue) || 0,
+            linkedGoalIds: selectedGoalIds,
+            notes: existing?.notes,
+            createdAt: existing?.createdAt || new Date().toISOString()
+        };
 
-    await db.saveKPI(newKPI);
-    fetchData();
-    setIsCreateOpen(false);
+        await db.saveKPI(newKPI);
+        await fetchData();
+        setIsCreateOpen(false);
+    } catch (error) {
+        console.error("Failed to save KPI", error);
+        alert("Failed to save KPI. Please try again.");
+    } finally {
+        setIsSaving(false);
+    }
   };
 
   const handleUpdateProgressSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!progressUpdateId) return;
 
-    const existingKPI = kpis.find(k => k.id === progressUpdateId);
-    if (!existingKPI) return;
+    setIsSaving(true);
+    try {
+        const existingKPI = kpis.find(k => k.id === progressUpdateId);
+        if (!existingKPI) return;
 
-    const updatedKPI: KPI = {
-        ...existingKPI,
-        currentValue: parseFloat(updateValue),
-        notes: updateNotes
-    };
+        const updatedKPI: KPI = {
+            ...existingKPI,
+            currentValue: parseFloat(updateValue) || 0,
+            notes: updateNotes
+        };
 
-    await db.saveKPI(updatedKPI);
-    fetchData();
-    setIsUpdateOpen(false);
+        await db.saveKPI(updatedKPI);
+        await fetchData();
+        setIsUpdateOpen(false);
+    } catch (error) {
+        console.error("Failed to update KPI progress", error);
+    } finally {
+        setIsSaving(false);
+    }
   };
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
@@ -271,20 +288,20 @@ const KPIs: React.FC = () => {
               <div className="bg-white w-full max-w-lg rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
                   <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
                       <h2 className="text-lg font-bold text-gray-800">{editingId ? 'Edit KPI' : 'Create KPI'}</h2>
-                      <button onClick={() => setIsCreateOpen(false)}><X size={20} className="text-gray-400 hover:text-gray-600" /></button>
+                      <button onClick={() => !isSaving && setIsCreateOpen(false)} disabled={isSaving}><X size={20} className="text-gray-400 hover:text-gray-600 disabled:opacity-50" /></button>
                   </div>
                   
                   <div className="p-6 overflow-y-auto">
                       <form id="kpi-form" onSubmit={handleCreateSubmit} className="space-y-4">
                           <div>
                               <label className="block text-sm font-medium text-gray-700 mb-1">KPI Name</label>
-                              <input required type="text" value={name} onChange={e => setName(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none" placeholder="e.g. Monthly Sales" />
+                              <input required type="text" value={name} onChange={e => setName(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none" placeholder="e.g. Monthly Sales" disabled={isSaving} />
                           </div>
                           
                           <div className="grid grid-cols-2 gap-4">
                               <div>
                                   <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-                                  <select value={type} onChange={e => setType(e.target.value as any)} className="w-full border rounded-lg p-2 bg-white">
+                                  <select value={type} onChange={e => setType(e.target.value as any)} className="w-full border rounded-lg p-2 bg-white" disabled={isSaving}>
                                       <option value="numeric">Numeric</option>
                                       <option value="currency">Currency</option>
                                       <option value="percentage">Percentage</option>
@@ -292,20 +309,20 @@ const KPIs: React.FC = () => {
                               </div>
                               <div>
                                   <label className="block text-sm font-medium text-gray-700 mb-1">Target Value</label>
-                                  <input required type="number" step="any" value={targetValue} onChange={e => setTargetValue(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none" placeholder="100" />
+                                  <input required type="number" step="any" value={targetValue} onChange={e => setTargetValue(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none" placeholder="100" disabled={isSaving} />
                               </div>
                           </div>
 
                           <div>
                               <label className="block text-sm font-medium text-gray-700 mb-1">Description (Optional)</label>
-                              <textarea rows={2} value={description} onChange={e => setDescription(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none resize-none" placeholder="What does this measure?" />
+                              <textarea rows={2} value={description} onChange={e => setDescription(e.target.value)} className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none resize-none" placeholder="What does this measure?" disabled={isSaving} />
                           </div>
 
                           <div>
                               <label className="block text-sm font-medium text-gray-700 mb-2">Link Goals</label>
                               <div className="border rounded-lg p-2 max-h-40 overflow-y-auto space-y-1 bg-gray-50">
                                   {goals.map(g => (
-                                      <div key={g.id} onClick={() => toggleGoalSelection(g.id)} className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm ${selectedGoalIds.includes(g.id) ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-200 text-gray-700'}`}>
+                                      <div key={g.id} onClick={() => !isSaving && toggleGoalSelection(g.id)} className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm ${selectedGoalIds.includes(g.id) ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-200 text-gray-700'} ${isSaving ? 'pointer-events-none opacity-50' : ''}`}>
                                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${selectedGoalIds.includes(g.id) ? 'bg-primary border-primary' : 'bg-white border-gray-300'}`}>
                                               {selectedGoalIds.includes(g.id) && <ArrowRight size={10} className="text-white" />}
                                           </div>
@@ -319,9 +336,15 @@ const KPIs: React.FC = () => {
                   </div>
 
                   <div className="p-4 border-t border-gray-100 flex justify-end gap-2 bg-gray-50">
-                      <button onClick={() => setIsCreateOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg">Cancel</button>
-                      <button form="kpi-form" type="submit" className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600 flex items-center gap-2">
-                          <Save size={18} /> Save KPI
+                      <button onClick={() => setIsCreateOpen(false)} disabled={isSaving} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-50">Cancel</button>
+                      <button 
+                        form="kpi-form" 
+                        type="submit" 
+                        disabled={isSaving}
+                        className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600 flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                      >
+                          {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} 
+                          {isSaving ? 'Saving...' : 'Save KPI'}
                       </button>
                   </div>
               </div>
@@ -334,7 +357,7 @@ const KPIs: React.FC = () => {
               <div className="bg-white w-full max-w-sm rounded-xl shadow-xl overflow-hidden">
                    <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
                       <h2 className="text-lg font-bold text-gray-800">Update Progress</h2>
-                      <button onClick={() => setIsUpdateOpen(false)}><X size={20} className="text-gray-400 hover:text-gray-600" /></button>
+                      <button onClick={() => !isSaving && setIsUpdateOpen(false)} disabled={isSaving}><X size={20} className="text-gray-400 hover:text-gray-600 disabled:opacity-50" /></button>
                   </div>
                   
                   <div className="p-6">
@@ -350,6 +373,7 @@ const KPIs: React.FC = () => {
                                     value={updateValue} 
                                     onChange={e => setUpdateValue(e.target.value)} 
                                     className="w-full border rounded-lg p-3 text-lg font-bold text-center focus:ring-2 focus:ring-primary/20 outline-none" 
+                                    disabled={isSaving}
                                   />
                               </div>
                           </div>
@@ -362,15 +386,22 @@ const KPIs: React.FC = () => {
                                 onChange={e => setUpdateNotes(e.target.value)} 
                                 className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-primary/20 outline-none resize-none text-sm" 
                                 placeholder="Any context for this update?" 
+                                disabled={isSaving}
                               />
                           </div>
                       </form>
                   </div>
 
                    <div className="p-4 border-t border-gray-100 flex justify-end gap-2 bg-gray-50">
-                      <button onClick={() => setIsUpdateOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg">Cancel</button>
-                      <button form="progress-form" type="submit" className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600 flex items-center gap-2">
-                          <Activity size={18} /> Update
+                      <button onClick={() => setIsUpdateOpen(false)} disabled={isSaving} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-50">Cancel</button>
+                      <button 
+                        form="progress-form" 
+                        type="submit" 
+                        disabled={isSaving}
+                        className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600 flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                      >
+                           {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Activity size={18} />} 
+                           {isSaving ? 'Updating...' : 'Update'}
                       </button>
                   </div>
               </div>
