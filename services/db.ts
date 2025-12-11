@@ -307,18 +307,49 @@ class DBService {
   // --- KPIs ---
 
   async getKPIs(): Promise<KPI[]> {
+    const user = await this.getCurrentUser();
+    if (!user) return [];
+
     try {
-        // Explicitly name the join using the foreign key column 'user_id'
-        const { data, error } = await supabase
+        // 1. Fetch MY Own KPIs
+        // We explicitly select KPIs where user_id matches the logged-in user
+        const { data: myKpis, error: myError } = await supabase
             .from('kpis')
-            .select(`
-                *,
-                profiles:user_id ( full_name, department )
-            `);
+            .select(`*, profiles:user_id ( full_name, department )`)
+            .eq('user_id', user.id);
+
+        if (myError) {
+             console.error("Error fetching my KPIs", myError);
+             throw myError;
+        }
+
+        // 2. Fetch Department KPIs (if user belongs to a department)
+        // We fetch ALL 'department' level KPIs first, then filter in memory to ensure
+        // we strictly match the user's department name. This is safer than relying on complex joins/RLS alone.
+        let deptKpis: any[] = [];
+        if (user.department) {
+             const { data: dKpis, error: dError } = await supabase
+                .from('kpis')
+                .select(`*, profiles:user_id ( full_name, department )`)
+                .eq('level', 'department');
+             
+             if (!dError && dKpis) {
+                 deptKpis = dKpis.filter((k: any) => 
+                     // Match department name strictly
+                     k.profiles?.department === user.department && 
+                     // Exclude if I am the owner (already in myKpis, though usually dept KPIs are owned by Head)
+                     k.user_id !== user.id
+                 );
+             }
+        }
+
+        // Combine unique list
+        const allKpis = [...(myKpis || []), ...deptKpis];
         
-        if (error) throw error;
-        
-        return data.map((k: any) => ({
+        // Remove duplicates if any
+        const uniqueKpis = Array.from(new Map(allKpis.map(item => [item.id, item])).values());
+
+        return uniqueKpis.map((k: any) => ({
             ...k,
             userId: k.user_id,
             targetValue: k.target_value,
@@ -331,25 +362,8 @@ class DBService {
             ownerName: k.profiles?.full_name
         }));
     } catch (e) {
-        // Fallback: Simple fetch if complex join fails
-        const { data, error } = await supabase.from('kpis').select('*');
-        if (error) {
-            console.error("Critical KPI fetch error", error);
-            return [];
-        }
-
-        return data.map((k: any) => ({
-            ...k,
-            userId: k.user_id,
-            targetValue: k.target_value,
-            currentValue: k.current_value,
-            weight: k.weight || 1, 
-            linkedGoalIds: k.linked_goal_ids || [],
-            level: k.level || 'individual',
-            parentKpiId: k.parent_kpi_id,
-            createdAt: k.created_at,
-            ownerName: 'User'
-        }));
+        console.error("Critical KPI fetch error", e);
+        return [];
     }
   }
 
@@ -387,12 +401,11 @@ class DBService {
 
   async getDepartmentKPIs(): Promise<KPI[]> {
     const user = await this.getCurrentUser();
-    if (!user) return [];
+    if (!user || !user.department) return [];
 
     try {
         // Fetch KPIs that are marked 'department'
         // Join with profiles to get the owner's department
-        // We do client-side filtering as an extra safety measure against RLS edge cases
         const { data, error } = await supabase
             .from('kpis')
             .select(`*, profiles:user_id(full_name, department)`)
@@ -401,9 +414,10 @@ class DBService {
         if (error) throw error;
         
         // Robust Filtering: Check if the KPI owner's department matches current user's department
-        const filtered = user.department 
-            ? data.filter((k: any) => k.profiles && k.profiles.department === user.department)
-            : data;
+        // This ensures employees only see Parent KPIs from their OWN department
+        const filtered = data.filter((k: any) => 
+            k.profiles && k.profiles.department === user.department
+        );
         
         return filtered.map((k: any) => ({
             ...k,
